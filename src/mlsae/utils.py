@@ -103,69 +103,6 @@ d_mlp = model.cfg.d_mlp
 d_vocab = model.cfg.d_vocab
 
 
-class AutoEncoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        dtype = DTYPES[cfg.enc_dtype]
-        l1_coeff = cfg.l1_coeff
-        self.W_enc = nn.Parameter(
-            torch.nn.init.kaiming_uniform_(
-                torch.empty(cfg.act_size, cfg.dict_size, dtype=dtype)
-            )
-        )
-        self.W_dec = nn.Parameter(
-            torch.nn.init.kaiming_uniform_(
-                torch.empty(cfg.dict_size, cfg.act_size, dtype=dtype)
-            )
-        )
-        self.W_dec.data = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
-        self.b_enc = nn.Parameter(torch.zeros(cfg.dict_size, dtype=dtype))
-        self.b_dec = nn.Parameter(torch.zeros(cfg.act_size, dtype=dtype))
-        self.l1_coeff = l1_coeff
-        self.to(cfg.device)
-
-    def forward(self, x):
-        x_cent = x - self.b_dec
-        feature_acts = F.relu(x_cent @ self.W_enc + self.b_enc)
-        l2_loss = (
-            ((feature_acts @ self.W_dec + self.b_dec).float() - x.float())
-            .pow(2)
-            .sum(-1)
-            .mean(0)
-        )
-        l1_loss = cfg.l1_coeff * (feature_acts.float().abs().sum())
-        loss = l2_loss + l1_loss
-        return loss, feature_acts, l2_loss, l1_loss
-
-    @torch.no_grad()
-    def make_decoder_weights_and_grad_unit_norm(self):
-        W_dec_normed = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
-        W_dec_grad_proj = (self.W_dec.grad * W_dec_normed).sum(
-            -1, keepdim=True
-        ) * W_dec_normed
-        self.W_dec.grad -= W_dec_grad_proj
-        self.W_dec.data = W_dec_normed
-
-    def get_version(self):
-        version_list = [int(file.stem) for file in model_dir.glob("*.pt")]
-        return max(version_list, default=-1) + 1
-
-    def save(self):
-        version = self.get_version()
-        torch.save(self.state_dict(), model_dir / f"{version}.pt")
-        with open(model_dir / f"{version}_cfg.json", "w") as f:
-            json.dump(cfg.__dict__, f)
-        print(f"Saved as version {version}")
-
-    @classmethod
-    def load(cls, version):
-        with open(model_dir / f"{version}_cfg.json", "r") as f:
-            cfg_dict = json.load(f)
-        self = cls()
-        self.load_state_dict(torch.load(model_dir / f"{version}.pt"))
-        return self
-
-
 def load_encoder_training_data(shuffle=True):
     training_data_path = data_dir / "tokens.pt"
     if not training_data_path.exists():
@@ -232,34 +169,3 @@ class Buffer:
         if self.pointer > self.buffer.shape[0] // 2 - cfg.batch_size:
             self.refresh()
         return out
-
-
-@torch.no_grad()
-def reinit_encoder_weights(indices, encoder):
-    new_W_enc = torch.nn.init.kaiming_uniform_(torch.zeros_like(encoder.W_enc))
-    new_W_dec = torch.nn.init.kaiming_uniform_(torch.zeros_like(encoder.W_dec))
-    new_b_enc = torch.zeros_like(encoder.b_enc)
-    print(new_W_dec.shape, new_W_enc.shape, new_b_enc.shape)
-    encoder.W_enc.data[:, indices] = new_W_enc[:, indices]
-    encoder.W_dec.data[indices, :] = new_W_dec[indices, :]
-    encoder.b_enc.data[indices] = new_b_enc[indices]
-
-
-@torch.no_grad()
-def get_freqs(encoder: AutoEncoder, buffer: Buffer, num_batches: int):
-    act_freq_scores = torch.zeros(cfg.dict_size, dtype=torch.float32).to(cfg.device)
-    total = 0
-    for i in tqdm.trange(num_batches):
-        tokens = buffer.all_tokens[
-            torch.randperm(len(buffer.all_tokens))[: cfg.model_batch_size]
-        ]
-        _, cache = model.run_with_cache(
-            tokens, stop_at_layer=cfg.layer + 1, names_filter=cfg.act_name
-        )
-        acts = cache[cfg.act_name]
-        acts = acts.reshape(-1, cfg.act_size)
-        hidden = encoder(acts)[2]
-        act_freq_scores += (hidden > 0).sum(0)
-        total += hidden.shape[0]
-    act_freq_scores /= total
-    return act_freq_scores

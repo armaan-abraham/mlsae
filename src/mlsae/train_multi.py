@@ -1,7 +1,7 @@
 import torch
 import tqdm
 from utils import Buffer, Config, model
-from multilayer_autoencoder import MultiLayerAutoEncoder
+from mlsae.mlsae import MultiLayerSAE
 import wandb
 import argparse
 
@@ -17,7 +17,7 @@ def train_one_autoencoder(
     Trains one SAE with the given architecture and L1 coefficient.
     Returns the trained model.
     """
-    autoenc = MultiLayerAutoEncoder(
+    autoenc = MultiLayerSAE(
         encoder_dims=encoder_dims,
         sparse_dim=sparse_dim,
         decoder_dims=decoder_dims,

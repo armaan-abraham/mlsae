@@ -35,8 +35,9 @@ class MultiLayerSAE(nn.Module):
         self.sparse_dim = sparse_dim
         self.act_size = act_size
         self.l1_coeff = l1_coeff
-        self.device_name = device
+        self.enc_dtype = enc_dtype  # store the string key (e.g. "fp32")
         self.dtype = DTYPES[enc_dtype]
+        self.device_name = device
 
         # Build encoder
         layers = []
@@ -48,7 +49,7 @@ class MultiLayerSAE(nn.Module):
 
         # Sparse representation
         layers.append(nn.Linear(in_dim, sparse_dim))
-        # No activation here; we will apply relu in forward()
+        # We apply ReLU in forward() below
 
         self.encoder = nn.Sequential(*layers)
 
@@ -66,7 +67,6 @@ class MultiLayerSAE(nn.Module):
         self.to(device)
 
     def forward(self, x):
-        # Subtract bias if you wish; simpler version omits bias in linear layers.
         # Encode
         encoded = self.encoder(x)
         # Sparse representation with ReLU
@@ -85,7 +85,10 @@ class MultiLayerSAE(nn.Module):
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        """Only apply to final decoder layer"""
+        """
+        If you want to replicate the 'unit-norm' approach from the single-layer code,
+        you can do so on the final decoder layer or on all layers. Example for final layer:
+        """
         if hasattr(self.decoder[-1], "weight"):
             w = self.decoder[-1].weight
             w_normed = w / w.norm(dim=-1, keepdim=True)
@@ -120,7 +123,8 @@ class MultiLayerSAE(nn.Module):
             "sparse_dim": self.sparse_dim,
             "act_size": self.act_size,
             "l1_coeff": self.l1_coeff,
-            "enc_dtype": str(self.dtype),
+            # Save the string key ("fp32", "fp16", etc.) rather than "torch.float32"
+            "enc_dtype": self.enc_dtype,
             "device": self.device_name,
         }
         with open(save_path / f"{version}_cfg.json", "w") as f:
@@ -139,7 +143,7 @@ class MultiLayerSAE(nn.Module):
             decoder_dims=config_dict["decoder_dims"],
             act_size=config_dict["act_size"],
             l1_coeff=config_dict["l1_coeff"],
-            enc_dtype=config_dict["enc_dtype"].split('.')[-1],  # e.g. "float32"
+            enc_dtype=config_dict["enc_dtype"],
             device=config_dict["device"],
         )
         state_dict = torch.load(load_path / f"{version}.pt")
