@@ -1,16 +1,12 @@
 import os
-import json
 import torch
 import numpy as np
 import einops
 import pprint
 from pathlib import Path
 import transformer_lens
-import torch.nn as nn
-import torch.nn.functional as F
 from datasets import load_dataset
 from dataclasses import dataclass
-import tqdm
 
 this_dir = Path(__file__).parent
 
@@ -22,6 +18,7 @@ site_to_size = {
     "resid_post": 512,
 }
 
+
 @dataclass
 class DataConfig:
     """
@@ -29,6 +26,7 @@ class DataConfig:
     This config should only contain parameters relevant to
     dataset handling and buffering logic, not autoencoder training.
     """
+
     seed: int = 49
     batch_size: int = 4096
     buffer_mult: int = 384
@@ -63,6 +61,7 @@ class DataConfig:
     @property
     def dict_size(self) -> int:
         return self.act_size * self.dict_mult
+
 
 data_cfg = DataConfig()
 pprint.pprint(data_cfg)
@@ -136,13 +135,14 @@ class Buffer:
     A buffer that streams activation data from the model's intermediate representations.
     Pulls new data in chunks, caches it, and shuffles it.
     """
+
     def __init__(self):
         self.all_tokens = load_encoder_training_data()
         # Create a buffer for the activations
         self.buffer = torch.zeros(
             (data_cfg.buffer_size, data_cfg.act_size),
-            dtype=torch.bfloat16,
-            device=data_cfg.device
+            dtype=DTYPES[data_cfg.enc_dtype],
+            device=data_cfg.device,
         )
         self.token_pointer = 0
         self.first = True
@@ -154,8 +154,7 @@ class Buffer:
         Refill and shuffle the buffer with fresh activations from the model.
         """
         self.pointer = 0
-        # We'll generate activations in bfloat16 for memory efficiency
-        with torch.autocast("cuda", torch.bfloat16):
+        with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
             if self.first:
                 num_batches = data_cfg.buffer_batches
             else:
@@ -167,7 +166,9 @@ class Buffer:
                     self.token_pointer : self.token_pointer + data_cfg.model_batch_size
                 ]
                 _, cache = model.run_with_cache(
-                    tokens, stop_at_layer=data_cfg.layer + 1, names_filter=data_cfg.act_name
+                    tokens,
+                    stop_at_layer=data_cfg.layer + 1,
+                    names_filter=data_cfg.act_name,
                 )
                 acts = cache[data_cfg.act_name].reshape(-1, data_cfg.act_size)
 
@@ -178,7 +179,9 @@ class Buffer:
 
         # Reset pointer and shuffle buffer
         self.pointer = 0
-        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0]).to(data_cfg.device)]
+        self.buffer = self.buffer[
+            torch.randperm(self.buffer.shape[0]).to(data_cfg.device)
+        ]
 
     @torch.no_grad()
     def next(self):

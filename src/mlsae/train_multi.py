@@ -6,35 +6,39 @@ import tqdm
 import wandb
 
 # Import what we need
-from mlsae.mlsae import MultiLayerSAE
+from mlsae.model import MultiLayerSAE
 from mlsae.utils import data_cfg, Buffer
+
 
 @dataclass
 class TrainConfig:
     """
     Configuration for training the sparse autoencoders.
     """
+
     # Specify SAE layer dims as multiples of the input dimension
-    architectures: list = field(default_factory=lambda: [
-        {
-            "name": "0-0",
-            "encoder_dim_mults": [],
-            "sparse_dim_mult": 32,
-            "decoder_dim_mults": [],
-        },
-        {
-            "name": "1-0",
-            "encoder_dim_mults": [2],
-            "sparse_dim_mult": 32,
-            "decoder_dim_mults": [],
-        },
-        {
-            "name": "1-1",
-            "encoder_dim_mults": [2],
-            "sparse_dim_mult": 32,
-            "decoder_dim_mults": [2],
-        },
-    ])
+    architectures: list = field(
+        default_factory=lambda: [
+            {
+                "name": "0-0",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 32,
+                "decoder_dim_mults": [],
+            },
+            {
+                "name": "1-0",
+                "encoder_dim_mults": [2],
+                "sparse_dim_mult": 32,
+                "decoder_dim_mults": [],
+            },
+            {
+                "name": "1-1",
+                "encoder_dim_mults": [2],
+                "sparse_dim_mult": 32,
+                "decoder_dim_mults": [2],
+            },
+        ]
+    )
     l1_values: list = field(default_factory=lambda: [1e-4, 3e-4])
     lr: float = 1e-4
     num_tokens: int = int(2e9)
@@ -43,7 +47,9 @@ class TrainConfig:
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
 
+
 train_cfg = TrainConfig()
+
 
 def main():
     """
@@ -83,19 +89,21 @@ def main():
                 lr=train_cfg.lr,
                 betas=(train_cfg.beta1, train_cfg.beta2),
             )
-            autoencoders.append({
-                "model": autoenc,
-                "optimizer": optimizer,
-                "name": arch_name,
-                "l1_coeff": l1_coeff,
-            })
+            autoencoders.append(
+                {
+                    "model": autoenc,
+                    "optimizer": optimizer,
+                    "name": arch_name,
+                    "l1_coeff": l1_coeff,
+                }
+            )
 
     # 3) We'll do the same total number of training steps for each SAE.
     total_steps = train_cfg.num_tokens // data_cfg.batch_size
 
     print("Training all SAEs...")
     # 4) Single loop that fetches from the buffer and trains all SAEs
-    for step_idx in tqdm.trange(total_steps, desc="Training all SAEs w/ single buffer"):
+    for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
         # Get a batch of activations (this may trigger buffer.refresh() behind the scenes)
         acts = buffer.next()
 
@@ -134,6 +142,7 @@ def main():
 
     print("Finishing W&B project...")
     wandb.finish()
+
 
 if __name__ == "__main__":
     main()

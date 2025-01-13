@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils import DTYPES, cfg
+from mlsae.utils import DTYPES
 import json
 from pathlib import Path
 
@@ -41,6 +41,8 @@ class MultiLayerSAE(nn.Module):
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
+        print(f"Device: {self.device_name}")
+        print(f"Dtype: {self.dtype}")
 
         # Build encoder
         layers = []
@@ -68,7 +70,7 @@ class MultiLayerSAE(nn.Module):
         self.decoder = nn.Sequential(*dec_layers)
 
         # Finally, ensure the module is on the right device/dtype
-        self.to(self.device, self.dtype)
+        self.to(self.device_name, self.dtype)
 
     def forward(self, x):
         # Encode

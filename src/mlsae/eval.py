@@ -1,10 +1,11 @@
 import torch
 import csv
 from utils import Buffer, Config
-from mlsae.mlsae import MultiLayerSAE
+from mlsae.model import MultiLayerSAE
 import tqdm
 import argparse
 import json
+
 
 def evaluate_autoencoder(model_paths, cfg: Config, output_csv):
     """
@@ -30,7 +31,9 @@ def evaluate_autoencoder(model_paths, cfg: Config, output_csv):
         total_acts = 0
 
         with torch.no_grad():
-            for _ in tqdm.trange(eval_batches, desc=f"Evaluating {arch_name}, v{version}"):
+            for _ in tqdm.trange(
+                eval_batches, desc=f"Evaluating {arch_name}, v{version}"
+            ):
                 acts = buffer.next()
                 loss, feature_acts, l2_loss, l1_loss = autoenc(acts)
                 reconstructed = autoenc.decoder(feature_acts)
@@ -46,12 +49,14 @@ def evaluate_autoencoder(model_paths, cfg: Config, output_csv):
 
         avg_mse = total_mse / total_count
         avg_l0 = total_nonzero / total_acts  # fraction of nonzero
-        results.append({
-            "architecture_name": arch_name,
-            "version": version,
-            "avg_mse": avg_mse,
-            "avg_l0": avg_l0
-        })
+        results.append(
+            {
+                "architecture_name": arch_name,
+                "version": version,
+                "avg_mse": avg_mse,
+                "avg_l0": avg_l0,
+            }
+        )
 
     fieldnames = ["architecture_name", "version", "avg_mse", "avg_l0"]
     with open(output_csv, "w", newline="") as f:
@@ -69,8 +74,8 @@ def main():
         type=str,
         required=True,
         help=(
-            "JSON string with a list of {\"architecture_name\": str, \"version\": int} to evaluate. "
-            "Example: '[{\"architecture_name\":\"arch1\",\"version\":0},{\"architecture_name\":\"arch2\",\"version\":2}]'"
+            'JSON string with a list of {"architecture_name": str, "version": int} to evaluate. '
+            'Example: \'[{"architecture_name":"arch1","version":0},{"architecture_name":"arch2","version":2}]\''
         ),
     )
     parser.add_argument("--output_csv", type=str, default="evaluation_results.csv")
