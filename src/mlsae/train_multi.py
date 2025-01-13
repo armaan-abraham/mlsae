@@ -52,12 +52,16 @@ def main():
       - Builds an SAE for each (architecture, l1) combo
       - Runs training steps in a single loop
     """
+    print("Starting training...")
+    print(f"Initializing W&B project {train_cfg.wandb_project}...")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
     wandb.run.name = "multi_sae_single_buffer"
 
+    print("Building buffer...")
     # 1) Build one Buffer
     buffer = Buffer()
 
+    print("Building SAEs...")
     # 2) Create all SAE variants + their optimizers
     autoencoders = []
     for arch_dict in train_cfg.architectures:
@@ -89,6 +93,7 @@ def main():
     # 3) We'll do the same total number of training steps for each SAE.
     total_steps = train_cfg.num_tokens // data_cfg.batch_size
 
+    print("Training all SAEs...")
     # 4) Single loop that fetches from the buffer and trains all SAEs
     for step_idx in tqdm.trange(total_steps, desc="Training all SAEs w/ single buffer"):
         # Get a batch of activations (this may trigger buffer.refresh() behind the scenes)
@@ -120,12 +125,14 @@ def main():
                 }
                 wandb.log(metrics)
 
+    print("Saving all SAEs...")
     # 5) Done training, save each model
     for entry in autoencoders:
         autoenc = entry["model"]
         arch_name = entry["name"]
         autoenc.save(arch_name)
 
+    print("Finishing W&B project...")
     wandb.finish()
 
 if __name__ == "__main__":
