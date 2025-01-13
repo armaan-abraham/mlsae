@@ -1,3 +1,3 @@
-# mlsae
+# Multi-layer sparse autoencoders
 
-Describe your project here.
+The superposition hypothesis might be bogus, but sparsity is good!
