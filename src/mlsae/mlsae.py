@@ -11,7 +11,7 @@ model_dir = Path(__file__).parent / "checkpoints"
 class MultiLayerSAE(nn.Module):
     """
     Multi-layer sparse autoencoder with a single sparse representation layer.
-    The user specifies:
+    The user specifies (dimensions are specified as multiples of act_size):
     - A list of encoder-layer sizes: e.g., [dim1, dim2, ..., dim_n].
     - A single sparse representation dimension (largest dimension).
     - A list of decoder-layer sizes: e.g., [dim1, dim2, ..., dim_m].
@@ -20,51 +20,55 @@ class MultiLayerSAE(nn.Module):
 
     def __init__(
         self,
-        encoder_dims,
-        sparse_dim,
-        decoder_dims,
-        act_size,
-        l1_coeff,
-        enc_dtype="fp32",
-        device="cuda:0",
+        encoder_dim_mults: list[int],
+        sparse_dim_mult: int,
+        decoder_dim_mults: list[int],
+        act_size: int,
+        l1_coeff: float,
+        enc_dtype: str = "fp32",
+        device: str = "cuda:0",
     ):
         super().__init__()
 
-        self.encoder_dims = encoder_dims
-        self.decoder_dims = decoder_dims
-        self.sparse_dim = sparse_dim
+        self.encoder_dims = [dim * act_size for dim in encoder_dim_mults]
+        self.decoder_dims = [dim * act_size for dim in decoder_dim_mults]
+        self.sparse_dim = sparse_dim_mult * act_size
         self.act_size = act_size
         self.l1_coeff = l1_coeff
         self.enc_dtype = enc_dtype  # store the string key (e.g. "fp32")
         self.dtype = DTYPES[enc_dtype]
         self.device_name = device
+        print(f"Encoder dims: {self.encoder_dims}")
+        print(f"Decoder dims: {self.decoder_dims}")
+        print(f"Sparse dim: {self.sparse_dim}")
 
         # Build encoder
         layers = []
-        in_dim = act_size
-        for dim in encoder_dims:
+        in_dim = self.act_size
+        for dim in self.encoder_dims:
             layers.append(nn.Linear(in_dim, dim))
             layers.append(nn.ReLU())
             in_dim = dim
 
         # Sparse representation
-        layers.append(nn.Linear(in_dim, sparse_dim))
+        layers.append(nn.Linear(in_dim, self.sparse_dim))
         # We apply ReLU in forward() below
 
         self.encoder = nn.Sequential(*layers)
 
         # Build decoder
         dec_layers = []
-        out_dim = sparse_dim
-        for dim in decoder_dims:
+        out_dim = self.sparse_dim
+        for dim in self.decoder_dims:
             dec_layers.append(nn.Linear(out_dim, dim))
             dec_layers.append(nn.ReLU())
             out_dim = dim
 
-        dec_layers.append(nn.Linear(out_dim, act_size))
+        dec_layers.append(nn.Linear(out_dim, self.act_size))
         self.decoder = nn.Sequential(*dec_layers)
 
-        self.to(device)
+        # Finally, ensure the module is on the right device/dtype
+        self.to(self.device, self.dtype)
 
     def forward(self, x):
         # Encode
@@ -86,8 +90,7 @@ class MultiLayerSAE(nn.Module):
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
         """
-        If you want to replicate the 'unit-norm' approach from the single-layer code,
-        you can do so on the final decoder layer or on all layers. Example for final layer:
+        Unit norm only on final decoder layer
         """
         if hasattr(self.decoder[-1], "weight"):
             w = self.decoder[-1].weight
@@ -115,6 +118,7 @@ class MultiLayerSAE(nn.Module):
 
         if version is None:
             version = self.get_version(save_path)
+
         torch.save(self.state_dict(), save_path / f"{version}.pt")
 
         config_dict = {
@@ -146,6 +150,11 @@ class MultiLayerSAE(nn.Module):
             enc_dtype=config_dict["enc_dtype"],
             device=config_dict["device"],
         )
-        state_dict = torch.load(load_path / f"{version}.pt")
+
+        state_dict = torch.load(
+            load_path / f"{version}.pt",
+        )
         new_model.load_state_dict(state_dict)
+        new_model.to(new_model.device, new_model.dtype)
+
         return new_model

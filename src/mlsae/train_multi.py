@@ -1,45 +1,88 @@
+from dataclasses import dataclass, field
 import torch
 import tqdm
-from utils import Buffer, Config, model
-from mlsae.mlsae import MultiLayerSAE
 import wandb
-import argparse
+
+from mlsae.mlsae import MultiLayerSAE
+from mlsae.utils import data_cfg, Buffer
+
+@dataclass
+class TrainConfig:
+    """
+    Configuration class for training the sparse autoencoder.
+    This includes hyperparams relevant to training only.
+    """
+    # Specify SAE layer dims as multiples of the input dimension
+    architectures: list = field(default_factory=lambda: [
+        {
+            "name": "0-0",
+            "encoder_dim_mults": [],
+            "sparse_dim_mult": 32,
+            "decoder_dim_mults": [],
+        },
+        {
+            "name": "1-0",
+            "encoder_dim_mults": [2],
+            "sparse_dim_mult": 32,
+            "decoder_dim_mults": [],
+        },
+        {
+            "name": "1-1",
+            "encoder_dim_mults": [2],
+            "sparse_dim_mult": 32,
+            "decoder_dim_mults": [2],
+        },
+    ])
+    l1_values: list = field(default_factory=lambda: [1e-4, 3e-4])
+    lr: float = 1e-4
+    num_tokens: int = int(2e9)
+    beta1: float = 0.9
+    beta2: float = 0.99
+    wandb_project: str = "mlsae"
+    wandb_entity: str = "armaanabraham-independent"
+
+train_cfg = TrainConfig()
 
 def train_one_autoencoder(
     architecture_name,
-    encoder_dims,
-    sparse_dim,
-    decoder_dims,
+    encoder_dim_mults,
+    sparse_dim_mult,
+    decoder_dim_mults,
     l1_coeff,
-    cfg: Config,
 ):
     """
     Trains one SAE with the given architecture and L1 coefficient.
     Returns the trained model.
     """
+    # Construct the autoencoder with the data config's parameters
     autoenc = MultiLayerSAE(
-        encoder_dims=encoder_dims,
-        sparse_dim=sparse_dim,
-        decoder_dims=decoder_dims,
-        act_size=cfg.act_size,
+        encoder_dims=encoder_dim_mults,
+        sparse_dim=sparse_dim_mult,
+        decoder_dims=decoder_dim_mults,
+        act_size=data_cfg.act_size,
         l1_coeff=l1_coeff,
-        enc_dtype=cfg.enc_dtype,
-        device=cfg.device,
+        enc_dtype=data_cfg.enc_dtype,
+        device=data_cfg.device,
     )
 
     buffer = Buffer()
-    autoenc_optim = torch.optim.Adam(
-        autoenc.parameters(), lr=cfg.lr, betas=(cfg.beta1, cfg.beta2)
+    optimizer = torch.optim.Adam(
+        autoenc.parameters(),
+        lr=train_cfg.lr,
+        betas=(train_cfg.beta1, train_cfg.beta2)
     )
-    total_batches = cfg.num_tokens // cfg.batch_size
+
+    total_batches = train_cfg.num_tokens // data_cfg.batch_size
 
     for i in tqdm.trange(total_batches, desc=f"Training {architecture_name}, L1={l1_coeff}"):
         acts = buffer.next()
         loss, feature_acts, l2_loss, l1_loss = autoenc(acts)
         loss.backward()
+
         autoenc.make_decoder_weights_and_grad_unit_norm()
-        autoenc_optim.step()
-        autoenc_optim.zero_grad()
+
+        optimizer.step()
+        optimizer.zero_grad()
 
         if (i + 1) % 100 == 0:
             metrics = {
@@ -51,55 +94,27 @@ def train_one_autoencoder(
 
     return autoenc
 
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--architectures",
-        type=str,
-        required=True,
-        help=(
-            "JSON string with a list of architecture configs. "
-            "Each item: {\"name\": str, \"encoder_dims\": [...], \"sparse_dim\": int, \"decoder_dims\": [...]}"
-        ),
-    )
-    parser.add_argument(
-        "--l1_values",
-        type=str,
-        required=True,
-        help="JSON string with a list of L1 coefficients to try, e.g. [1e-4, 3e-4]",
-    )
-    parser.add_argument("--wandb_project", type=str, default="autoencoder")
-    parser.add_argument("--wandb_entity", type=str, default="armaanabraham-independent")
-    args = parser.parse_args()
+    # Initialize wandb logging
+    wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
 
-    import json
-    arch_list = json.loads(args.architectures)
-    l1_list = json.loads(args.l1_values)
-
-    cfg = Config()
-
-    wandb.init(project=args.wandb_project, entity=args.wandb_entity)
-    for arch_dict in arch_list:
-        for l1_coeff in l1_list:
+    for arch_dict in train_cfg.architectures:
+        for l1_coeff in train_cfg.l1_values:
             arch_name = arch_dict["name"]
-            # Build a unique run name for wandb
-            wandb_run_name = f"{arch_name}_l1={l1_coeff}"
-            wandb.run.name = wandb_run_name
+            run_name = f"{arch_name}_l1={l1_coeff}"
+            wandb.run.name = run_name
 
             autoenc = train_one_autoencoder(
                 architecture_name=arch_name,
-                encoder_dims=arch_dict["encoder_dims"],
-                sparse_dim=arch_dict["sparse_dim"],
-                decoder_dims=arch_dict["decoder_dims"],
+                encoder_dim_mults=arch_dict["encoder_dim_mults"],
+                sparse_dim_mult=arch_dict["sparse_dim_mult"],
+                decoder_dim_mults=arch_dict["decoder_dim_mults"],
                 l1_coeff=l1_coeff,
-                cfg=cfg,
             )
-            # Save model
+            # Save each trained model
             autoenc.save(arch_name)
 
     wandb.finish()
-
 
 if __name__ == "__main__":
     main()

@@ -22,18 +22,16 @@ site_to_size = {
     "resid_post": 512,
 }
 
-
 @dataclass
-class Config:
+class DataConfig:
+    """
+    Configuration for data buffering and dataset loading.
+    This config should only contain parameters relevant to
+    dataset handling and buffering logic, not autoencoder training.
+    """
     seed: int = 49
     batch_size: int = 4096
     buffer_mult: int = 384
-    lr: float = 1e-4
-    num_tokens: int = int(2e9)
-    l1_coeff: float = 3e-4
-    beta1: float = 0.9
-    beta2: float = 0.99
-    dict_mult: int = 32
     seq_len: int = 128
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
@@ -66,13 +64,8 @@ class Config:
     def dict_size(self) -> int:
         return self.act_size * self.dict_mult
 
-    @property
-    def name(self) -> str:
-        return f"{self.model_name}_{self.layer}_{self.dict_size}_{self.site}"
-
-
-cfg = Config()
-pprint.pprint(cfg)
+data_cfg = DataConfig()
+pprint.pprint(data_cfg)
 
 # Create directories
 cache_dir = this_dir / "cache"
@@ -82,17 +75,21 @@ model_dir = this_dir / "checkpoints"
 for dir_path in [cache_dir, data_dir, model_dir]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
-# Set environment variables
+# Set environment variables for caching
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
+# Map string dtype keys to torch dtypes
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-np.random.seed(cfg.seed)
 
+# Seed for reproducibility
+np.random.seed(data_cfg.seed)
+
+# Load the transformer model used for data encoding
 model = (
-    transformer_lens.HookedTransformer.from_pretrained(cfg.model_name)
-    .to(DTYPES[cfg.enc_dtype])
-    .to(cfg.device)
+    transformer_lens.HookedTransformer.from_pretrained(data_cfg.model_name)
+    .to(DTYPES[data_cfg.enc_dtype])
+    .to(data_cfg.device)
 )
 
 n_layers = model.cfg.n_layers
@@ -104,6 +101,10 @@ d_vocab = model.cfg.d_vocab
 
 
 def load_encoder_training_data(shuffle=True):
+    """
+    Loads or downloads the tokenized dataset. Returns a tensor of tokens.
+    Implements on-disk caching to avoid repeated downloads.
+    """
     training_data_path = data_dir / "tokens.pt"
     if not training_data_path.exists():
         print("Fetching training data...")
@@ -113,10 +114,13 @@ def load_encoder_training_data(shuffle=True):
         data.save_to_disk(data_dir / "c4_code_tokenized_2b.hf")
         data.set_format(type="torch", columns=["tokens"])
         all_tokens = data["tokens"]
+        # Rearrange to shape (N, 128) for contiguous sequences
         all_tokens = einops.rearrange(
             all_tokens, "batch (x seq_len) -> (batch x) seq_len", x=8, seq_len=128
         )
+        # Set first token to bos_token for each sequence
         all_tokens[:, 0] = model.tokenizer.bos_token_id
+        # Shuffle the dataset once
         all_tokens = all_tokens[torch.randperm(all_tokens.shape[0])]
         torch.save(all_tokens, training_data_path)
     else:
@@ -128,10 +132,17 @@ def load_encoder_training_data(shuffle=True):
 
 
 class Buffer:
+    """
+    A buffer that streams activation data from the model's intermediate representations.
+    Pulls new data in chunks, caches it, and shuffles it.
+    """
     def __init__(self):
         self.all_tokens = load_encoder_training_data()
+        # Create a buffer for the activations
         self.buffer = torch.zeros(
-            (cfg.buffer_size, cfg.act_size), dtype=torch.bfloat16, device=cfg.device
+            (data_cfg.buffer_size, data_cfg.act_size),
+            dtype=torch.bfloat16,
+            device=data_cfg.device
         )
         self.token_pointer = 0
         self.first = True
@@ -139,33 +150,44 @@ class Buffer:
 
     @torch.no_grad()
     def refresh(self):
+        """
+        Refill and shuffle the buffer with fresh activations from the model.
+        """
         self.pointer = 0
+        # We'll generate activations in bfloat16 for memory efficiency
         with torch.autocast("cuda", torch.bfloat16):
             if self.first:
-                num_batches = cfg.buffer_batches
+                num_batches = data_cfg.buffer_batches
             else:
-                num_batches = cfg.buffer_batches // 2
+                num_batches = data_cfg.buffer_batches // 2
             self.first = False
-            for _ in range(0, num_batches, cfg.model_batch_size):
+
+            for _ in range(0, num_batches, data_cfg.model_batch_size):
                 tokens = self.all_tokens[
-                    self.token_pointer : self.token_pointer + cfg.model_batch_size
+                    self.token_pointer : self.token_pointer + data_cfg.model_batch_size
                 ]
                 _, cache = model.run_with_cache(
-                    tokens, stop_at_layer=cfg.layer + 1, names_filter=cfg.act_name
+                    tokens, stop_at_layer=data_cfg.layer + 1, names_filter=data_cfg.act_name
                 )
-                acts = cache[cfg.act_name].reshape(-1, cfg.act_size)
+                acts = cache[data_cfg.act_name].reshape(-1, data_cfg.act_size)
 
+                # Copy these activations to the buffer
                 self.buffer[self.pointer : self.pointer + acts.shape[0]] = acts
                 self.pointer += acts.shape[0]
-                self.token_pointer += cfg.model_batch_size
+                self.token_pointer += data_cfg.model_batch_size
 
+        # Reset pointer and shuffle buffer
         self.pointer = 0
-        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0]).to(cfg.device)]
+        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0]).to(data_cfg.device)]
 
     @torch.no_grad()
     def next(self):
-        out = self.buffer[self.pointer : self.pointer + cfg.batch_size]
-        self.pointer += cfg.batch_size
-        if self.pointer > self.buffer.shape[0] // 2 - cfg.batch_size:
+        """
+        Fetch the next batch from the buffer. If we're halfway through the buffer,
+        we refresh the buffer (to keep half of it always fresh).
+        """
+        out = self.buffer[self.pointer : self.pointer + data_cfg.batch_size]
+        self.pointer += data_cfg.batch_size
+        if self.pointer > self.buffer.shape[0] // 2 - data_cfg.batch_size:
             self.refresh()
         return out
