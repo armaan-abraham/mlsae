@@ -105,7 +105,7 @@ def load_encoder_training_data(shuffle=True):
     Loads or downloads the tokenized dataset. Returns a tensor of tokens.
     Implements on-disk caching to avoid repeated downloads.
     """
-    training_data_path = data_dir / "tokens.pt"
+    training_data_path = data_dir / "tokens_c4_code_tokenized_2b.pt"
     if not training_data_path.exists():
         print("Fetching training data...")
         data = load_dataset(
