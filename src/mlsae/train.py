@@ -1,11 +1,8 @@
-# train_multi.py
-
 from dataclasses import dataclass, field
 import torch
 import tqdm
 import wandb
 
-# Import what we need
 from mlsae.model import MultiLayerSAE
 from mlsae.utils import data_cfg, Buffer
 
@@ -107,7 +104,7 @@ def main():
         # Get a batch of activations (this may trigger buffer.refresh() behind the scenes)
         acts = buffer.next()
 
-        # Now train each SAE for ONE step
+        # Now train each SAE for one step
         for entry in autoencoders:
             autoenc = entry["model"]
             optimizer = entry["optimizer"]
