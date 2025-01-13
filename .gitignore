@@ -11,3 +11,4 @@ wheels/
 
 src/mlsae/cache/
 src/mlsae/data/
+wandb/
