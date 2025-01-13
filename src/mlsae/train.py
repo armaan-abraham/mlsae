@@ -6,6 +6,8 @@ from mlsae.model import MultiLayerSAE
 from mlsae.utils import data_cfg, Buffer
 from dataclasses import dataclass, field
 
+L0_THRESHOLD = 1e-6
+
 @dataclass
 class TrainConfig:
     architectures: list = field(
@@ -30,9 +32,9 @@ class TrainConfig:
             },
         ]
     )
-    l1_values: list = field(default_factory=lambda: [1e-4, 3e-4])
+    l1_values: list = field(default_factory=lambda: [1e-4, 2e-4, 4e-4, 8e-4, 16e-4])
     lr: float = 1e-4
-    num_tokens: int = int(2e9)
+    num_tokens: int = int(2e8)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
@@ -50,18 +52,25 @@ def train_step(entry, acts):
     l1_coeff = entry["l1_coeff"]
 
     loss, feature_acts, l2_loss, l1_loss = autoenc(acts_local)
+    l0 = (feature_acts > L0_THRESHOLD).sum().item() / feature_acts.numel()
     loss.backward()
 
     autoenc.make_decoder_weights_and_grad_unit_norm()
     optimizer.step()
     optimizer.zero_grad()
 
-    return loss.item(), l2_loss.item(), l1_loss.item(), arch_name, l1_coeff
+    return loss.item(), l2_loss.item(), l1_loss.item(), l0, arch_name, l1_coeff
 
 def main():
     print("Starting training...")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
     wandb.run.name = "multi_sae_single_buffer"
+
+
+    wandb.config.update(train_cfg)
+    wandb.config.update(data_cfg)
+    
+    print(wandb.config)
 
     print("Building buffer...")
     buffer = Buffer()
@@ -117,13 +126,14 @@ def main():
 
         # Collect results
         for f in futures:
-            loss_val, l2_val, l1_val, arch_name, l1_coeff = f.result()
+            loss_val, l2_val, l1_val, l0, arch_name, l1_coeff = f.result()
 
-            if (step_idx + 1) % 100 == 0:
+            if (step_idx + 1) % 50 == 0:
                 metrics = {
                     f"{arch_name}_{l1_coeff}_loss": loss_val,
                     f"{arch_name}_{l1_coeff}_l2_loss": l2_val,
                     f"{arch_name}_{l1_coeff}_l1_loss": l1_val,
+                    f"{arch_name}_{l1_coeff}_l0": l0,
                 }
                 wandb.log(metrics)
 
