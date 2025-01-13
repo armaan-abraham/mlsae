@@ -38,6 +38,7 @@ class DataConfig:
     site: str = "mlp_out"
     layer: int = 0
     device: str = "cuda:0"
+    rows_to_load: int = int(1e4)
 
     @property
     def model_batch_size(self) -> int:
@@ -105,13 +106,16 @@ def load_encoder_training_data(shuffle=True):
     Loads or downloads the tokenized dataset. Returns a tensor of tokens.
     Implements on-disk caching to avoid repeated downloads.
     """
-    training_data_path = data_dir / "tokens_c4_code_tokenized_2b.pt"
+    cache_name = f"c4_code_tokenized_2b_{data_cfg.rows_to_load:.2e}"
+    training_data_path = data_dir / f"{cache_name}.pt"
     if not training_data_path.exists():
         print("Fetching training data...")
         data = load_dataset(
             "NeelNanda/c4-code-tokenized-2b", split="train", cache_dir=cache_dir
         )
-        data.save_to_disk(data_dir / "c4_code_tokenized_2b.hf")
+        if data_cfg.rows_to_load > 0:
+            data = data.select(range(min(data_cfg.rows_to_load, len(data))))
+        data.save_to_disk(data_dir / f"{cache_name}.hf")
         data.set_format(type="torch", columns=["tokens"])
         all_tokens = data["tokens"]
         # Rearrange to shape (N, 128) for contiguous sequences
@@ -128,6 +132,7 @@ def load_encoder_training_data(shuffle=True):
 
     if shuffle:
         all_tokens = all_tokens[torch.randperm(all_tokens.shape[0])]
+    print(f"Loaded {all_tokens.shape[0]} rows")
     return all_tokens
 
 
