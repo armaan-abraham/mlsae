@@ -39,10 +39,11 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
+    l1_coeff_iter_to_max: int = 5e3
 
 train_cfg = TrainConfig()
 
-def train_step(entry, acts):
+def train_step(entry, acts, step_idx):
     # Move data to correct device
     device = entry["device"]
     acts_local = acts.to(device, non_blocking=True)
@@ -51,7 +52,7 @@ def train_step(entry, acts):
     arch_name = entry["name"]
     l1_coeff = entry["l1_coeff"]
 
-    loss, feature_acts, l2_loss, l1_loss = autoenc(acts_local)
+    loss, feature_acts, l2_loss, l1_loss = autoenc(acts_local, step_idx)
     l0 = (feature_acts > L0_THRESHOLD).sum().item() / feature_acts.numel()
     num_nonzero = l0 * autoenc.sparse_dim
     loss.backward()
@@ -60,7 +61,7 @@ def train_step(entry, acts):
     optimizer.step()
     optimizer.zero_grad()
 
-    return loss.item(), l2_loss.item(), l1_loss.item(), l0, num_nonzero, arch_name, l1_coeff
+    return loss.item(), l2_loss.item(), l1_loss.item(), l0, num_nonzero, arch_name, l1_coeff, autoenc.get_l1_coeff(step_idx)
 
 def main():
     print("Starting training...")
@@ -92,6 +93,7 @@ def main():
                 decoder_dim_mults=arch_dict["decoder_dim_mults"],
                 act_size=data_cfg.act_size,
                 l1_coeff=l1_coeff,
+                l1_coeff_iter_to_max=train_cfg.l1_coeff_iter_to_max,
                 enc_dtype=data_cfg.enc_dtype,
                 device=device_str,
             )
@@ -123,11 +125,11 @@ def main():
             # Kick off each model's training step in its own thread
             futures = []
             for entry in autoencoders:
-                futures.append(executor.submit(train_step, entry, acts))
+                futures.append(executor.submit(train_step, entry, acts, step_idx))
 
             # Collect results
             for f in futures:
-                loss_val, l2_val, l1_val, l0, num_nonzero, arch_name, l1_coeff = f.result()
+                loss_val, l2_val, l1_val, l0, num_nonzero, arch_name, l1_coeff, l1_coeff_iter = f.result()
 
                 if (step_idx + 1) % 50 == 0:
                     metrics = {
@@ -136,7 +138,8 @@ def main():
                         f"{arch_name}_{l1_coeff}_l1_loss": l1_val,
                         f"{arch_name}_{l1_coeff}_l0": l0,
                         f"{arch_name}_{l1_coeff}_num_nonzero": num_nonzero,
-                    },
+                        f"{arch_name}_{l1_coeff}_l1_coeff_iter": l1_coeff_iter,
+                    }
                     wandb.log(metrics)
     finally:
         print("Saving all SAEs...")

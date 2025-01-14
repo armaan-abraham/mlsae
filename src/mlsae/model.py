@@ -25,6 +25,7 @@ class MultiLayerSAE(nn.Module):
         decoder_dim_mults: list[int],
         act_size: int,
         l1_coeff: float,
+        l1_coeff_iter_to_max: float,
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
     ):
@@ -38,6 +39,7 @@ class MultiLayerSAE(nn.Module):
         self.enc_dtype = enc_dtype  # store the string key (e.g. "fp32")
         self.dtype = DTYPES[enc_dtype]
         self.device_name = device
+        self.l1_coeff_iter_to_max = l1_coeff_iter_to_max
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
@@ -91,7 +93,10 @@ class MultiLayerSAE(nn.Module):
                 if layer.bias is not None:
                     nn.init.zeros_(layer.bias)
 
-    def forward(self, x):
+    def get_l1_coeff(self, step_idx):
+        return min(self.l1_coeff, 1 / self.l1_coeff_iter_to_max * step_idx * self.l1_coeff)
+
+    def forward(self, x, step_idx):
         # Encode
         encoded = self.encoder(x)
         # Sparse representation with ReLU
@@ -103,7 +108,7 @@ class MultiLayerSAE(nn.Module):
         l2_loss = (reconstructed.float() - x.float()).pow(2).mean()
 
         # L1 penalty only on the sparse layer
-        l1_loss = self.l1_coeff * feature_acts.float().abs().sum()
+        l1_loss = self.get_l1_coeff(step_idx) * feature_acts.float().abs().sum()
 
         loss = l2_loss + l1_loss
         return loss, feature_acts, l2_loss, l1_loss
