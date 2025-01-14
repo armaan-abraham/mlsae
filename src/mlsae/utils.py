@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 this_dir = Path(__file__).parent
 
+# TODO: this is wrong
 site_to_size = {
     "mlp_out": 512,
     "post": 2048,
@@ -40,8 +41,8 @@ class DataConfig:
     layer: int = 6
     device: str = "cuda:0"
     rows_to_load: int = -1
-    dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
-    cache_name: str = "openwebtext_1m"
+    dataset_name: str = "NeelNanda/c4-code-tokenized-2b"
+    cache_name: str = "c4_code_tokenized_2b"
     test_data_ratio: float = 0.05
 
     @property
@@ -105,7 +106,7 @@ d_mlp = model.cfg.d_mlp
 d_vocab = model.cfg.d_vocab
 
 
-def load_encoder_training_data(shuffle=True):
+def load_encoder_training_data():
     """
     Loads or downloads the tokenized dataset. Returns a tensor of tokens
     for training. Also splits off a given number of test samples and
@@ -120,12 +121,9 @@ def load_encoder_training_data(shuffle=True):
     # If both train and test files already exist, simply load the train set and return it.
     if train_data_path.exists() and test_data_path.exists():
         print("Detected existing split train/test data; loading from disk...")
-        train_tokens = torch.load(train_data_path)
-        # (Optional) If you also want to load test data in the future, you can do:
-        # test_tokens = torch.load(test_data_path)
-        # For now, we only return train_tokens to keep consistent with original usage.
-        if shuffle:
-            train_tokens = train_tokens[torch.randperm(train_tokens.shape[0])]
+        print("Loading train data...")
+        # train_tokens = torch.load(train_data_path)
+        train_tokens = torch.load(test_data_path) # TODO: switch back
         print(f"Loaded {train_tokens.shape[0]} training rows")
         return train_tokens
 
@@ -216,6 +214,8 @@ class Buffer:
                     stop_at_layer=data_cfg.layer + 1,
                     names_filter=data_cfg.act_name,
                 )
+                print(cache.keys())
+                print(data_cfg.act_name)
                 print(cache[data_cfg.act_name].shape)
                 acts = cache[data_cfg.act_name].reshape(-1, data_cfg.act_size)
 
