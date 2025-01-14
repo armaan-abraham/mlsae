@@ -13,7 +13,7 @@ class TrainConfig:
             {
                 "name": "0-0",
                 "encoder_dim_mults": [],
-                "sparse_dim_mult": 32,
+                "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
             },
             {
@@ -22,22 +22,23 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
             },
-            {
-                "name": "1-0.1",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 16,
-                "decoder_dim_mults": [],
-            },
-            {
-                "name": "1-1",
-                "encoder_dim_mults": [2],
-                "sparse_dim_mult": 16,
-                "decoder_dim_mults": [2],
-            },
+            # {
+            #     "name": "1-0.1",
+            #     "encoder_dim_mults": [1],
+            #     "sparse_dim_mult": 16,
+            #     "decoder_dim_mults": [],
+            # },
+            # {
+            #     "name": "1-1",
+            #     "encoder_dim_mults": [1],
+            #     "sparse_dim_mult": 16,
+            #     "decoder_dim_mults": [1],
+            # },
         ]
     )
     # Instead of multiple L1 coefficients, use multiple k values
-    k_values: list = field(default_factory=lambda: [32, 128, 512])
+    # k_values: list = field(default_factory=lambda: [32, 128, 512])
+    k_values: list = field(default_factory=lambda: [32])
 
     lr: float = 1e-4
     num_tokens: int = int(2e8)
@@ -112,7 +113,7 @@ def main():
                 }
             )
 
-    total_steps = train_cfg.num_tokens // data_cfg.batch_size
+    total_steps = train_cfg.num_tokens // data_cfg.buffer_batch_size_tokens
     print("Training all SAEs...")
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(autoencoders))
@@ -123,7 +124,7 @@ def main():
 
             futures = []
             for entry in autoencoders:
-                futures.append(executor.submit(train_step, entry, acts, step_idx))
+                futures.append(executor.submit(train_step, entry, acts))
 
             for f in futures:
                 loss_val, arch_name, k_val = f.result()

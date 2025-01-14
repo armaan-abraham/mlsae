@@ -7,71 +7,67 @@ from pathlib import Path
 import transformer_lens
 from datasets import load_dataset
 from dataclasses import dataclass
-
+import time
 
 this_dir = Path(__file__).parent
 
-# TODO: this is wrong
-site_to_size = {
-    "mlp_out": 512,
-    "post": 2048,
-    "resid_pre": 512,
-    "resid_mid": 512,
-    "resid_post": 512,
-}
-
+"""
+- How does this work between buffer size and rows_to_load?
+"""
 
 @dataclass
 class DataConfig:
-    """
-    Configuration for data buffering and dataset loading.
-    This config should only contain parameters relevant to
-    dataset handling and buffering logic, not autoencoder training.
-    """
-
     seed: int = 49
-    batch_size: int = 8192
-    buffer_mult: int = 384
-    seq_len: int = 128
-    dataset_seq_len: int = 1024
+    buffer_batch_size_tokens: int = 8192
+    buffer_size_buffer_batch_size_mult: int = 256
+    seq_len: int = 64
+    model_batch_size_seqs: int = 64
+    dataset_row_len: int = 1024
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
     model_name: str = "gpt2-small"
-    site: str = "hook_resid_pre"
+    site: str = "resid_pre"
     layer: int = 6
+    act_size: int = 768 # This is checked when we run the model
     device: str = "cuda:0"
-    rows_to_load: int = -1
-    dataset_name: str = "NeelNanda/c4-code-tokenized-2b"
-    cache_name: str = "c4_code_tokenized_2b"
+    dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
     test_data_ratio: float = 0.05
 
     @property
-    def model_batch_size(self) -> int:
-        return self.batch_size // self.seq_len * 16
+    def seqs_per_dataset_row(self) -> int:
+        return self.dataset_row_len // self.seq_len
 
     @property
-    def buffer_size(self) -> int:
-        return self.batch_size * self.buffer_mult
+    def buffer_size_tokens(self) -> int:
+        return self.buffer_batch_size_tokens * self.buffer_size_buffer_batch_size_mult
 
     @property
-    def buffer_batches(self) -> int:
-        return self.buffer_size // self.seq_len
+    def buffer_size_seqs(self) -> int:
+        return self.buffer_size_tokens // self.seq_len
+
+    @property
+    def buffer_refresh_size_seqs(self) -> int:
+        return self.buffer_size_seqs // 2
 
     @property
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
 
-    @property
-    def act_size(self) -> int:
-        return site_to_size[self.site]
-
-    @property
-    def dict_size(self) -> int:
-        return self.act_size * self.dict_mult
-
 
 data_cfg = DataConfig()
-pprint.pprint(data_cfg)
+# Print regular attributes
+print("Regular attributes:")
+for k, v in data_cfg.__dict__.items():
+    print(f"{k}: {v}")
+
+# Print properties
+print("\nProperties:")
+properties = [attr for attr in dir(DataConfig) if isinstance(getattr(DataConfig, attr), property)]
+for prop in properties:
+    print(f"{prop}: {getattr(data_cfg, prop)}")
+
+assert data_cfg.dataset_row_len % data_cfg.seq_len == 0
+assert data_cfg.buffer_refresh_size_seqs % data_cfg.model_batch_size_seqs == 0
 
 # Create directories
 cache_dir = this_dir / "cache"
@@ -85,159 +81,138 @@ for dir_path in [cache_dir, data_dir, model_dir]:
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
-# Map string dtype keys to torch dtypes
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-
-# Seed for reproducibility
 np.random.seed(data_cfg.seed)
 
-# Load the transformer model used for data encoding
+# Load the transformer
 model = (
     transformer_lens.HookedTransformer.from_pretrained(data_cfg.model_name)
     .to(DTYPES[data_cfg.enc_dtype])
     .to(data_cfg.device)
 )
 
-n_layers = model.cfg.n_layers
-d_model = model.cfg.d_model
-n_heads = model.cfg.n_heads
-d_head = model.cfg.d_head
-d_mlp = model.cfg.d_mlp
-d_vocab = model.cfg.d_vocab
-
-
-def load_encoder_training_data():
-    """
-    Loads or downloads the tokenized dataset. Returns a tensor of tokens
-    for training. Also splits off a given number of test samples and
-    saves them to a separate file in the same cache folder.
-    """
-    split_cache_dir = data_dir / data_cfg.cache_name
-    split_cache_dir.mkdir(parents=True, exist_ok=True)
-
-    train_data_path = split_cache_dir / "tokens_train.pt"
-    test_data_path = split_cache_dir / "tokens_test.pt"
-
-    # If both train and test files already exist, simply load the train set and return it.
-    if train_data_path.exists() and test_data_path.exists():
-        print("Detected existing split train/test data; loading from disk...")
-        print("Loading train data...")
-        # train_tokens = torch.load(train_data_path)
-        train_tokens = torch.load(test_data_path) # TODO: switch back
-        print(f"Loaded {train_tokens.shape[0]} training rows")
-        return train_tokens
-
-    # Otherwise, fetch data and split.
-    # We won't use the old single-file path, so skip that logic entirely.
-    print("Fetching training data...")
-    data = load_dataset(
-        data_cfg.dataset_name, split="train", cache_dir=cache_dir
-    )
-    if data_cfg.rows_to_load > 0:
-        data = data.select(range(min(data_cfg.rows_to_load, len(data))))
-    data.save_to_disk(data_dir / f"{data_cfg.cache_name}.hf")
-    data.set_format(type="torch", columns=["input_ids"])
-    all_tokens = data["input_ids"]
-    assert (
-        all_tokens.shape[1] == data_cfg.dataset_seq_len
-    ), "Dataset sequence length must match dataset_seq_len"
-
-    # Rearrange to shape (N, seq_len) for contiguous sequences
-    all_tokens = einops.rearrange(
-        all_tokens,
-        "batch (x seq_len) -> (batch x) seq_len",
-        x=data_cfg.dataset_seq_len // data_cfg.seq_len,
-        seq_len=data_cfg.seq_len,
+def stream_training_chunks():
+    # Load a streaming dataset
+    dataset_iter = load_dataset(
+        data_cfg.dataset_name,
+        split="train",
+        streaming=True,
+        cache_dir=cache_dir,
     )
 
-    # Set first token to bos_token for each sequence
-    all_tokens[:, 0] = model.tokenizer.bos_token_id
+    row_batch_iter = dataset_iter.batch(data_cfg.buffer_refresh_size_seqs // data_cfg.seqs_per_dataset_row)
 
-    # Shuffle once overall
-    all_tokens = all_tokens[torch.randperm(all_tokens.shape[0])]
-
-    # Split off test samples
-    num_test = int(all_tokens.shape[0] * data_cfg.test_data_ratio)
-    test_tokens = all_tokens[:num_test]
-    train_tokens = all_tokens[num_test:]
-
-    # Save both splits
-    torch.save(train_tokens, train_data_path)
-    torch.save(test_tokens, test_data_path)
-    print(
-        f"Created train/test split: "
-        f"{train_tokens.shape[0]} train rows, "
-        f"{test_tokens.shape[0]} test rows"
-    )
-
-    # Return only the training portion for downstream usage
-    return train_tokens
+    for row_batch in row_batch_iter:
+        yield torch.tensor(row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device)
 
 
 class Buffer:
     """
-    A buffer that streams activation data from the model's intermediate representations.
-    Pulls new data in chunks, caches it, and shuffles it.
+    Streams tokens from the huggingface dataset in seq_len chunks.
+    On refresh, runs them through the model (up to buffer_seqs
+    worth) and saves the activations in self.buffer.
     """
-
     def __init__(self):
-        self.all_tokens = load_encoder_training_data()
-        # Create a buffer for the activations
+
+        self.token_stream = stream_training_chunks()
+
+        # Buffer to hold activations
         self.buffer = torch.zeros(
-            (data_cfg.buffer_size, data_cfg.act_size),
+            (data_cfg.buffer_size_tokens, data_cfg.act_size),
             dtype=DTYPES[data_cfg.enc_dtype],
             device=data_cfg.device,
         )
-        self.token_pointer = 0
+        self.pointer = 0
         self.first = True
+
+        # Fill up the buffer at startup
         self.refresh()
 
     @torch.no_grad()
     def refresh(self):
         """
         Refill and shuffle the buffer with fresh activations from the model.
+        Instead of loading tokens in batches of size equal to data_cfg.model_batch_size, 
+        we now load all required tokens for an entire refresh in one go, then process 
+        them in chunks.
         """
+        print("Refreshing buffer...")
+        start_time = time.time()
         self.pointer = 0
-        with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
-            if self.first:
-                num_batches = data_cfg.buffer_batches
-            else:
-                num_batches = data_cfg.buffer_batches // 2
-            self.first = False
 
-            for _ in range(0, num_batches, data_cfg.model_batch_size):
-                tokens = self.all_tokens[
-                    self.token_pointer : self.token_pointer + data_cfg.model_batch_size
-                ]
+        # Gather all rows needed for this refresh
+        rows = next(self.token_stream)
+        assert rows is not None, "No more data available from token_stream."
+
+        if self.first:
+            rows_next = next(self.token_stream)
+            rows = torch.cat([rows, rows_next], dim=0)
+
+        self.first = False
+
+        print("Preprocessing rows...")
+        seqs = einops.rearrange(
+            rows,
+            "row (seq token) -> (row seq) token",
+            token=data_cfg.seq_len,
+            seq=data_cfg.seqs_per_dataset_row,
+        )
+
+        print(f"seqs.shape: {seqs.shape}")
+
+        # Force BOS token
+        seqs[:, 0] = model.tokenizer.bos_token_id
+
+        print("Running model...")
+
+        assert seqs.shape[0] % data_cfg.buffer_refresh_size_seqs == 0
+
+        num_model_batches = seqs.shape[0] // data_cfg.model_batch_size_seqs
+
+        with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
+            loaded_batches = 0
+            while loaded_batches < num_model_batches:
+                start_idx = loaded_batches * data_cfg.model_batch_size_seqs
+                end_idx = start_idx + data_cfg.model_batch_size_seqs
+
+                model_batch = seqs[start_idx:end_idx]
+
+                # Forward pass with caching
                 _, cache = model.run_with_cache(
-                    tokens,
+                    model_batch,
                     stop_at_layer=data_cfg.layer + 1,
                     names_filter=data_cfg.act_name,
                 )
-                print(cache.keys())
-                print(data_cfg.act_name)
-                print(cache[data_cfg.act_name].shape)
-                acts = cache[data_cfg.act_name].reshape(-1, data_cfg.act_size)
 
-                # Copy these activations to the buffer
+                acts = cache[data_cfg.act_name]
+                # Expect shape: (data_cfg.model_batch_size_seqs, data_cfg.seq_len, data_cfg.act_size)
+                assert acts.shape == (data_cfg.model_batch_size_seqs, data_cfg.seq_len, data_cfg.act_size)
+                # Flatten from [batch, seq_len, act_size] -> [batch*seq_len, act_size]
+                acts = acts.reshape(
+                    data_cfg.model_batch_size_seqs * data_cfg.seq_len, 
+                    data_cfg.act_size
+                )
+
                 self.buffer[self.pointer : self.pointer + acts.shape[0]] = acts
                 self.pointer += acts.shape[0]
-                self.token_pointer += data_cfg.model_batch_size
 
-        # Reset pointer and shuffle buffer
+                assert self.pointer <= self.buffer.shape[0], "Buffer overflow"
+
+                loaded_batches += 1
+
+        # Shuffle the buffer
+        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0], device=data_cfg.device)]
         self.pointer = 0
-        self.buffer = self.buffer[
-            torch.randperm(self.buffer.shape[0]).to(data_cfg.device)
-        ]
+        print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
 
     @torch.no_grad()
     def next(self):
         """
-        Fetch the next batch from the buffer. If we're halfway through the buffer,
-        we refresh the buffer (to keep half of it always fresh).
+        Fetch the next batch from the buffer. If pointer goes beyond half,
+        refresh the buffer so it never goes stale.
         """
-        out = self.buffer[self.pointer : self.pointer + data_cfg.batch_size]
-        self.pointer += data_cfg.batch_size
-        if self.pointer > self.buffer.shape[0] // 2 - data_cfg.batch_size:
+        out = self.buffer[self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens]
+        self.pointer += data_cfg.buffer_batch_size_tokens
+        if self.pointer > self.buffer.shape[0] // 2 - data_cfg.buffer_batch_size_tokens:
             self.refresh()
         return out
