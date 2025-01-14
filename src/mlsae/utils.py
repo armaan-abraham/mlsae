@@ -8,12 +8,11 @@ import transformer_lens
 from datasets import load_dataset
 from dataclasses import dataclass
 import time
+import threading
+import concurrent.futures  # We'll use ThreadPoolExecutor
+# ... all your other imports ...
 
 this_dir = Path(__file__).parent
-
-"""
-- How does this work between buffer size and rows_to_load?
-"""
 
 @dataclass
 class DataConfig:
@@ -84,39 +83,41 @@ os.environ["DATASETS_CACHE"] = str(cache_dir)
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 np.random.seed(data_cfg.seed)
 
-# Load the transformer
-model = (
-    transformer_lens.HookedTransformer.from_pretrained(data_cfg.model_name)
-    .to(DTYPES[data_cfg.enc_dtype])
-    .to(data_cfg.device)
-)
+# ---- Prepare multiple model replicas (one per GPU) ----
+device_count = torch.cuda.device_count()
+if device_count <= 1:
+    print("Only one GPU detected, parallel approach will not speed up.")
+    
+models_on_each_gpu = []
+for dev_id in range(device_count):
+    dev_str = f"cuda:{dev_id}"
+    model_i = (
+        transformer_lens.HookedTransformer
+        .from_pretrained(data_cfg.model_name)
+        .to(DTYPES[data_cfg.enc_dtype])
+        .to(dev_str)
+    )
+    models_on_each_gpu.append(model_i)
 
 def stream_training_chunks():
-    # Load a streaming dataset
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
         split="train",
         streaming=True,
         cache_dir=cache_dir,
     )
-
-    row_batch_iter = dataset_iter.batch(data_cfg.buffer_refresh_size_seqs // data_cfg.seqs_per_dataset_row)
-
+    row_batch_iter = dataset_iter.batch(
+        data_cfg.buffer_refresh_size_seqs // data_cfg.seqs_per_dataset_row
+    )
     for row_batch in row_batch_iter:
         yield torch.tensor(row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device)
 
-
 class Buffer:
     """
-    Streams tokens from the huggingface dataset in seq_len chunks.
-    On refresh, runs them through the model (up to buffer_seqs
-    worth) and saves the activations in self.buffer.
+    Streams tokens and fills self.buffer with model activations.
     """
     def __init__(self):
-
         self.token_stream = stream_training_chunks()
-
-        # Buffer to hold activations
         self.buffer = torch.zeros(
             (data_cfg.buffer_size_tokens, data_cfg.act_size),
             dtype=DTYPES[data_cfg.enc_dtype],
@@ -124,23 +125,14 @@ class Buffer:
         )
         self.pointer = 0
         self.first = True
-
-        # Fill up the buffer at startup
         self.refresh()
 
     @torch.no_grad()
     def refresh(self):
-        """
-        Refill and shuffle the buffer with fresh activations from the model.
-        Instead of loading tokens in batches of size equal to data_cfg.model_batch_size, 
-        we now load all required tokens for an entire refresh in one go, then process 
-        them in chunks.
-        """
         print("Refreshing buffer...")
         start_time = time.time()
         self.pointer = 0
 
-        # Gather all rows needed for this refresh
         rows = next(self.token_stream)
         assert rows is not None, "No more data available from token_stream."
 
@@ -150,57 +142,72 @@ class Buffer:
 
         self.first = False
 
-        print("Preprocessing rows...")
         seqs = einops.rearrange(
             rows,
             "row (seq token) -> (row seq) token",
             token=data_cfg.seq_len,
             seq=data_cfg.seqs_per_dataset_row,
         )
-
-        print(f"seqs.shape: {seqs.shape}")
-
-        # Force BOS token
-        seqs[:, 0] = model.tokenizer.bos_token_id
-
-        print("Running model...")
-
+        seqs[:, 0] = models_on_each_gpu[0].tokenizer.bos_token_id
         assert seqs.shape[0] % data_cfg.buffer_refresh_size_seqs == 0
 
-        num_model_batches = seqs.shape[0] // data_cfg.model_batch_size_seqs
+        # ---- New parallel logic: we split 'seqs' for each GPU. ----
+        # For simplicity, each GPU processes an equal portion of 'seqs'.
+        # Adjust if your sequences don't split evenly, or if memory usage differs.
+        total_seqs = seqs.shape[0]
+        num_devices = len(models_on_each_gpu)
+        chunk_size = total_seqs // num_devices
 
-        with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
-            loaded_batches = 0
-            while loaded_batches < num_model_batches:
-                start_idx = loaded_batches * data_cfg.model_batch_size_seqs
-                end_idx = start_idx + data_cfg.model_batch_size_seqs
+        # Collect partial activations from each thread
+        def run_inference_on_device(device_idx, seq_chunk):
+            device_str = f"cuda:{device_idx}"
+            local_model = models_on_each_gpu[device_idx]
+            seq_chunk = seq_chunk.to(device_str)
 
-                model_batch = seqs[start_idx:end_idx]
-
-                # Forward pass with caching
-                _, cache = model.run_with_cache(
-                    model_batch,
+            with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
+                outputs, cache = local_model.run_with_cache(
+                    seq_chunk,
                     stop_at_layer=data_cfg.layer + 1,
                     names_filter=data_cfg.act_name,
                 )
+            acts = cache[data_cfg.act_name]  # shape: [batch, seq_len, act_size]
+            acts = acts.reshape(-1, data_cfg.act_size)
+            return acts  # Return on GPU (or move to CPU if desired)
 
-                acts = cache[data_cfg.act_name]
-                # Expect shape: (data_cfg.model_batch_size_seqs, data_cfg.seq_len, data_cfg.act_size)
-                assert acts.shape == (data_cfg.model_batch_size_seqs, data_cfg.seq_len, data_cfg.act_size)
-                # Flatten from [batch, seq_len, act_size] -> [batch*seq_len, act_size]
-                acts = acts.reshape(
-                    data_cfg.model_batch_size_seqs * data_cfg.seq_len, 
-                    data_cfg.act_size
+        seqs_list = []
+        for i in range(num_devices):
+            start_idx = i * chunk_size
+            # Last chunk takes the remainder in case total_seqs not divisible
+            end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
+            seqs_list.append(seqs[start_idx:end_idx])
+
+        # Fire up threads
+        results = []
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for i in range(num_devices):
+                futures.append(
+                    executor.submit(
+                        run_inference_on_device,
+                        i,  # device_idx
+                        seqs_list[i],
+                    )
                 )
+            for f in futures:
+                results.append(f.result())
 
-                self.buffer[self.pointer : self.pointer + acts.shape[0]] = acts
-                self.pointer += acts.shape[0]
+        # Combine partial results
+        # Each element of results is shape [chunk_size * seq_len, act_size] (except for possibly the last chunk)
+        # We will concat them into a single tensor
+        all_acts = torch.cat(results, dim=0)
 
-                assert self.pointer <= self.buffer.shape[0], "Buffer overflow"
+        # Now place combined acts in self.buffer
+        acts_count = all_acts.shape[0]
+        assert acts_count <= self.buffer.shape[0], "Buffer overflow"
+        self.buffer[:acts_count] = all_acts
+        self.pointer = acts_count
 
-                loaded_batches += 1
-
-        # Shuffle the buffer
+        # Shuffle
         self.buffer = self.buffer[torch.randperm(self.buffer.shape[0], device=data_cfg.device)]
         self.pointer = 0
         print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
