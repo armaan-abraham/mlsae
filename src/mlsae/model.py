@@ -7,15 +7,9 @@ from pathlib import Path
 
 model_dir = Path(__file__).parent / "checkpoints"
 
-
 class MultiLayerSAE(nn.Module):
     """
     Multi-layer sparse autoencoder with a single sparse representation layer.
-    The user specifies (dimensions are specified as multiples of act_size):
-    - A list of encoder-layer sizes: e.g., [dim1, dim2, ..., dim_n].
-    - A single sparse representation dimension (largest dimension).
-    - A list of decoder-layer sizes: e.g., [dim1, dim2, ..., dim_m].
-    Only the sparse representation layer has an L1 penalty to promote sparsity.
     """
 
     def __init__(
@@ -24,8 +18,7 @@ class MultiLayerSAE(nn.Module):
         sparse_dim_mult: int,
         decoder_dim_mults: list[int],
         act_size: int,
-        l1_coeff: float,
-        l1_coeff_iter_to_max: float,
+        top_k: int,
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
     ):
@@ -35,14 +28,16 @@ class MultiLayerSAE(nn.Module):
         self.decoder_dims = [dim * act_size for dim in decoder_dim_mults]
         self.sparse_dim = sparse_dim_mult * act_size
         self.act_size = act_size
-        self.l1_coeff = l1_coeff
-        self.enc_dtype = enc_dtype  # store the string key (e.g. "fp32")
+        self.k = top_k
+        assert self.k < self.sparse_dim, "top_k must be less than sparse_dim"
+        self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device_name = device
-        self.l1_coeff_iter_to_max = l1_coeff_iter_to_max
+
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
+        print(f"K: {self.k}")
         print(f"Device: {self.device_name}")
         print(f"Dtype: {self.dtype}")
 
@@ -56,7 +51,7 @@ class MultiLayerSAE(nn.Module):
 
         # Sparse representation
         layers.append(nn.Linear(in_dim, self.sparse_dim))
-        # We apply ReLU in forward() below
+        # We'll apply ReLU and top-k in forward()
 
         self.encoder = nn.Sequential(*layers)
 
@@ -71,53 +66,43 @@ class MultiLayerSAE(nn.Module):
         dec_layers.append(nn.Linear(out_dim, self.act_size))
         self.decoder = nn.Sequential(*dec_layers)
 
-        # Initialize weights with Kaiming
         self.init_weights()
-
-        # Finally, ensure the module is on the right device/dtype
         self.to(self.device_name, self.dtype)
 
     def init_weights(self):
-        """
-        Apply Kaiming initialization to all Linear layers.
-        """
         for layer in self.encoder:
             if isinstance(layer, nn.Linear):
                 nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
+                nn.init.zeros_(layer.bias)
 
         for layer in self.decoder:
             if isinstance(layer, nn.Linear):
                 nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-    def get_l1_coeff(self, step_idx):
-        return min(self.l1_coeff, 1 / self.l1_coeff_iter_to_max * step_idx * self.l1_coeff)
+                nn.init.zeros_(layer.bias)
 
     def forward(self, x, step_idx):
         # Encode
         encoded = self.encoder(x)
-        # Sparse representation with ReLU
         feature_acts = F.relu(encoded)
+
+        # Top-k (per-batch-element) in the sparse layer
+        if self.k < feature_acts.shape[1]:
+            # mask out everything except top k in each row
+            _, idxs = torch.topk(feature_acts, self.k, dim=1)
+            mask = torch.zeros_like(feature_acts, dtype=feature_acts.dtype).scatter_(1, idxs, 1.0)
+            feature_acts = feature_acts * mask
 
         # Decode
         reconstructed = self.decoder(feature_acts)
-        # Compute reconstruction loss (MSE)
+        # MSE loss as reconstruction loss
         l2_loss = (reconstructed.float() - x.float()).pow(2).mean()
+        loss = l2_loss
 
-        # L1 penalty only on the sparse layer
-        l1_loss = self.get_l1_coeff(step_idx) * feature_acts.float().abs().sum()
-
-        loss = l2_loss + l1_loss
-        return loss, feature_acts, l2_loss, l1_loss
+        return loss, feature_acts, l2_loss
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        """
-        Unit norm only on final decoder layer
-        """
+        # Keep final decoder layer weights unit norm in each row
         if hasattr(self.decoder[-1], "weight"):
             w = self.decoder[-1].weight
             w_normed = w / w.norm(dim=-1, keepdim=True)
@@ -136,9 +121,6 @@ class MultiLayerSAE(nn.Module):
         return max(version_list, default=-1) + 1
 
     def save(self, architecture_name, version=None):
-        """
-        Saves model state dict and config as JSON. If version is None, auto-increment it.
-        """
         save_path = model_dir / architecture_name
         save_path.mkdir(exist_ok=True, parents=True)
 
@@ -152,8 +134,7 @@ class MultiLayerSAE(nn.Module):
             "decoder_dims": self.decoder_dims,
             "sparse_dim": self.sparse_dim,
             "act_size": self.act_size,
-            "l1_coeff": self.l1_coeff,
-            # Save the string key ("fp32", "fp16", etc.) rather than "torch.float32"
+            "top_k": self.k,
             "enc_dtype": self.enc_dtype,
             "device": self.device_name,
         }
@@ -168,18 +149,16 @@ class MultiLayerSAE(nn.Module):
         with open(load_path / f"{version}_cfg.json", "r") as f:
             config_dict = json.load(f)
         new_model = cls(
-            encoder_dims=config_dict["encoder_dims"],
-            sparse_dim=config_dict["sparse_dim"],
-            decoder_dims=config_dict["decoder_dims"],
+            encoder_dim_mults=config_dict["encoder_dims"],
+            sparse_dim_mult=config_dict["sparse_dim"] // config_dict["act_size"],
+            decoder_dim_mults=config_dict["decoder_dims"],
             act_size=config_dict["act_size"],
-            l1_coeff=config_dict["l1_coeff"],
+            top_k=config_dict["top_k"],
             enc_dtype=config_dict["enc_dtype"],
             device=config_dict["device"],
         )
 
-        state_dict = torch.load(
-            load_path / f"{version}.pt",
-        )
+        state_dict = torch.load(load_path / f"{version}.pt")
         new_model.load_state_dict(state_dict)
         new_model.to(new_model.device, new_model.dtype)
 

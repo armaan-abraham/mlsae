@@ -6,8 +6,6 @@ from mlsae.model import MultiLayerSAE
 from mlsae.utils import data_cfg, Buffer
 from dataclasses import dataclass, field
 
-L0_THRESHOLD = 1e-6
-
 @dataclass
 class TrainConfig:
     architectures: list = field(
@@ -32,45 +30,43 @@ class TrainConfig:
             },
         ]
     )
-    l1_values: list = field(default_factory=lambda: [1e-6, 3e-6, 1e-5])
+    # Instead of multiple L1 coefficients, use multiple k values
+    k_values: list = field(default_factory=lambda: [64, 128, 256])
+
     lr: float = 1e-4
     num_tokens: int = int(2e8)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    l1_coeff_iter_to_max: int = 5e3
 
 train_cfg = TrainConfig()
 
 def train_step(entry, acts, step_idx):
-    # Move data to correct device
     device = entry["device"]
     acts_local = acts.to(device, non_blocking=True)
     autoenc = entry["model"]
     optimizer = entry["optimizer"]
     arch_name = entry["name"]
-    l1_coeff = entry["l1_coeff"]
+    k_val = entry["k"]  # top-k value
 
-    loss, feature_acts, l2_loss, l1_loss = autoenc(acts_local, step_idx)
-    l0 = (feature_acts > L0_THRESHOLD).sum().item() / feature_acts.numel()
-    num_nonzero = l0 * autoenc.sparse_dim
+    loss, feature_acts, l2_loss = autoenc(acts_local, step_idx)
+    # We no longer compute l0 or l1 losses
+
     loss.backward()
-
     autoenc.make_decoder_weights_and_grad_unit_norm()
     optimizer.step()
     optimizer.zero_grad()
 
-    return loss.item(), l2_loss.item(), l1_loss.item(), l0, num_nonzero, arch_name, l1_coeff, autoenc.get_l1_coeff(step_idx)
+    return loss.item(), l2_loss.item(), arch_name, k_val
 
 def main():
     print("Starting training...")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
-    wandb.run.name = "multi_sae_single_buffer"
+    wandb.run.name = "multi_sae_single_buffer_topk"
 
     wandb.config.update(train_cfg)
     wandb.config.update(data_cfg)
-    
     print(wandb.config)
 
     print("Building buffer...")
@@ -82,7 +78,7 @@ def main():
     idx = 0
 
     for arch_dict in train_cfg.architectures:
-        for l1_coeff in train_cfg.l1_values:
+        for k_val in train_cfg.k_values:
             device_id = idx % n_gpus
             device_str = f"cuda:{device_id}"
             idx += 1
@@ -92,8 +88,7 @@ def main():
                 sparse_dim_mult=arch_dict["sparse_dim_mult"],
                 decoder_dim_mults=arch_dict["decoder_dim_mults"],
                 act_size=data_cfg.act_size,
-                l1_coeff=l1_coeff,
-                l1_coeff_iter_to_max=train_cfg.l1_coeff_iter_to_max,
+                top_k=k_val,  # Pass the top-k value
                 enc_dtype=data_cfg.enc_dtype,
                 device=device_str,
             )
@@ -108,37 +103,31 @@ def main():
                     "optimizer": optimizer,
                     "device": device_str,
                     "name": arch_dict["name"],
-                    "l1_coeff": l1_coeff,
+                    "k": k_val,
                 }
             )
 
     total_steps = train_cfg.num_tokens // data_cfg.batch_size
     print("Training all SAEs...")
 
-    # Create a thread pool as large as number of SAEs (or smaller if you prefer)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(autoencoders))
 
     try:
         for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
             acts = buffer.next()
 
-            # Kick off each model's training step in its own thread
             futures = []
             for entry in autoencoders:
                 futures.append(executor.submit(train_step, entry, acts, step_idx))
 
-            # Collect results
             for f in futures:
-                loss_val, l2_val, l1_val, l0, num_nonzero, arch_name, l1_coeff, l1_coeff_iter = f.result()
+                loss_val, l2_val, arch_name, k_val = f.result()
 
+                # Log periodically
                 if (step_idx + 1) % 50 == 0:
                     metrics = {
-                        f"{arch_name}_{l1_coeff}_loss": loss_val,
-                        f"{arch_name}_{l1_coeff}_l2_loss": l2_val,
-                        f"{arch_name}_{l1_coeff}_l1_loss": l1_val,
-                        f"{arch_name}_{l1_coeff}_l0": l0,
-                        f"{arch_name}_{l1_coeff}_num_nonzero": num_nonzero,
-                        f"{arch_name}_{l1_coeff}_l1_coeff_iter": l1_coeff_iter,
+                        f"{arch_name}_k={k_val}_loss": loss_val,
+                        f"{arch_name}_k={k_val}_l2_loss": l2_val,
                     }
                     wandb.log(metrics)
     finally:
