@@ -151,9 +151,7 @@ class Buffer:
         seqs[:, 0] = models_on_each_gpu[0].tokenizer.bos_token_id
         assert seqs.shape[0] % data_cfg.buffer_refresh_size_seqs == 0
 
-        # ---- New parallel logic: we split 'seqs' for each GPU. ----
-        # For simplicity, each GPU processes an equal portion of 'seqs'.
-        # Adjust if your sequences don't split evenly, or if memory usage differs.
+        # Each GPU processes an equal portion of seqs
         total_seqs = seqs.shape[0]
         num_devices = len(models_on_each_gpu)
         chunk_size = total_seqs // num_devices
@@ -162,17 +160,25 @@ class Buffer:
         def run_inference_on_device(device_idx, seq_chunk):
             device_str = f"cuda:{device_idx}"
             local_model = models_on_each_gpu[device_idx]
+            batch_size_seqs = data_cfg.model_batch_size_seqs
+            all_acts = []
+
             seq_chunk = seq_chunk.to(device_str)
 
-            with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
-                outputs, cache = local_model.run_with_cache(
-                    seq_chunk,
-                    stop_at_layer=data_cfg.layer + 1,
-                    names_filter=data_cfg.act_name,
-                )
-            acts = cache[data_cfg.act_name]  # shape: [batch, seq_len, act_size]
-            acts = acts.reshape(-1, data_cfg.act_size)
-            return acts  # Return on GPU (or move to CPU if desired)
+            for start in range(0, seq_chunk.shape[0], batch_size_seqs):
+                sub_chunk = seq_chunk[start : start + batch_size_seqs]
+
+                with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
+                    _, cache = local_model.run_with_cache(
+                        sub_chunk,
+                        stop_at_layer=data_cfg.layer + 1,
+                        names_filter=data_cfg.act_name,
+                    )
+                acts = cache[data_cfg.act_name]  # shape: [batch_size, seq_len, act_size]
+                acts = acts.reshape(batch_size_seqs, data_cfg.seq_len, data_cfg.act_size)
+                all_acts.append(acts)
+
+            return torch.cat(all_acts, dim=0)
 
         seqs_list = []
         for i in range(num_devices):
