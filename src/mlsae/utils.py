@@ -20,7 +20,7 @@ class DataConfig:
     buffer_batch_size_tokens: int = 8192
     buffer_size_buffer_batch_size_mult: int = 256
     seq_len: int = 64
-    model_batch_size_seqs: int = 64
+    model_batch_size_seqs: int = 128
     dataset_row_len: int = 1024
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
@@ -54,13 +54,9 @@ class DataConfig:
 
 
 data_cfg = DataConfig()
-# Print regular attributes
-print("Regular attributes:")
+
 for k, v in data_cfg.__dict__.items():
     print(f"{k}: {v}")
-
-# Print properties
-print("\nProperties:")
 properties = [attr for attr in dir(DataConfig) if isinstance(getattr(DataConfig, attr), property)]
 for prop in properties:
     print(f"{prop}: {getattr(data_cfg, prop)}")
@@ -84,20 +80,24 @@ DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 np.random.seed(data_cfg.seed)
 
 # ---- Prepare multiple model replicas (one per GPU) ----
-device_count = torch.cuda.device_count()
-if device_count <= 1:
-    print("Only one GPU detected, parallel approach will not speed up.")
+# device_count = torch.cuda.device_count()
+device_count = 4
+print(f"Device count: {device_count}")
     
 models_on_each_gpu = []
 for dev_id in range(device_count):
     dev_str = f"cuda:{dev_id}"
     model_i = (
         transformer_lens.HookedTransformer
-        .from_pretrained(data_cfg.model_name)
+        .from_pretrained(data_cfg.model_name, device=dev_str)
         .to(DTYPES[data_cfg.enc_dtype])
-        .to(dev_str)
     )
     models_on_each_gpu.append(model_i)
+
+for i, model_i in enumerate(models_on_each_gpu):
+    # Check the first parameter just to confirm which device it lives on
+    param_name, param = next(model_i.named_parameters())
+    print(f"Model {i}, param {param_name} => {param.device}")
 
 def stream_training_chunks():
     dataset_iter = load_dataset(
@@ -121,7 +121,7 @@ class Buffer:
         self.buffer = torch.zeros(
             (data_cfg.buffer_size_tokens, data_cfg.act_size),
             dtype=DTYPES[data_cfg.enc_dtype],
-            device=data_cfg.device,
+            device="cpu",
         )
         self.pointer = 0
         self.first = True
@@ -142,6 +142,7 @@ class Buffer:
 
         self.first = False
 
+        print("Preprocessing rows...")
         seqs = einops.rearrange(
             rows,
             "row (seq token) -> (row seq) token",
@@ -156,56 +157,64 @@ class Buffer:
         num_devices = len(models_on_each_gpu)
         chunk_size = total_seqs // num_devices
 
-        # Collect partial activations from each thread
-        def run_inference_on_device(device_idx, seq_chunk):
-            device_str = f"cuda:{device_idx}"
-            local_model = models_on_each_gpu[device_idx]
-            batch_size_seqs = data_cfg.model_batch_size_seqs
-            all_acts = []
+        with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
+            # Collect partial activations from each thread
+            def run_inference_on_device(device_idx, seq_chunk):
+                device_str = f"cuda:{device_idx}"
+                local_model = models_on_each_gpu[device_idx]
+                batch_size_seqs = data_cfg.model_batch_size_seqs
+                all_acts = []
 
-            seq_chunk = seq_chunk.to(device_str)
+                start_time = time.time()
+                seq_chunk = seq_chunk.to(device_str)
 
-            for start in range(0, seq_chunk.shape[0], batch_size_seqs):
-                sub_chunk = seq_chunk[start : start + batch_size_seqs]
-
-                with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
+                for start in range(0, seq_chunk.shape[0], batch_size_seqs):
+                    start_time = time.time()
+                    sub_chunk = seq_chunk[start : start + batch_size_seqs]
                     _, cache = local_model.run_with_cache(
                         sub_chunk,
                         stop_at_layer=data_cfg.layer + 1,
                         names_filter=data_cfg.act_name,
+                        return_cache_object=True,
                     )
-                acts = cache[data_cfg.act_name]  # shape: [batch_size, seq_len, act_size]
-                acts = acts.reshape(batch_size_seqs, data_cfg.seq_len, data_cfg.act_size)
-                all_acts.append(acts)
+                    print(f"Cache device {device_idx}: {dir(cache)}")
+                    acts = cache.cache_dict[data_cfg.act_name]  # shape: [batch_size, seq_len, act_size]
+                    print(f"Acts device {device_idx}: {acts.device}")
+                    acts = acts.reshape(batch_size_seqs * data_cfg.seq_len, data_cfg.act_size)
+                    all_acts.append(acts)
+                    print(f"Running inference on device {device_idx}, iter {start}... {time.time() - start_time:.2f}")
 
-            return torch.cat(all_acts, dim=0)
+                return torch.cat(all_acts, dim=0)
 
-        seqs_list = []
-        for i in range(num_devices):
-            start_idx = i * chunk_size
-            # Last chunk takes the remainder in case total_seqs not divisible
-            end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
-            seqs_list.append(seqs[start_idx:end_idx])
-
-        # Fire up threads
-        results = []
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = []
+            seqs_list = []
             for i in range(num_devices):
-                futures.append(
-                    executor.submit(
-                        run_inference_on_device,
-                        i,  # device_idx
-                        seqs_list[i],
-                    )
-                )
-            for f in futures:
-                results.append(f.result())
+                start_idx = i * chunk_size
+                # Last chunk takes the remainder in case total_seqs not divisible
+                end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
+                seqs_list.append(seqs[start_idx:end_idx])
 
+            print("Running inference...")
+            # Fire up threads
+            results = []
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = []
+                for i in range(num_devices):
+                    print(f"Running inference on device {i}, {seqs_list[i].shape}...")
+                    futures.append(
+                        executor.submit(
+                            run_inference_on_device,
+                            i,  # device_idx
+                            seqs_list[i],
+                        )
+                    )
+                for f in futures:
+                    results.append(f.result())
+
+        print("Combining partial results...")
         # Combine partial results
         # Each element of results is shape [chunk_size * seq_len, act_size] (except for possibly the last chunk)
         # We will concat them into a single tensor
-        all_acts = torch.cat(results, dim=0)
+        all_acts = torch.cat([acts.to("cpu") for acts in results], dim=0)
 
         # Now place combined acts in self.buffer
         acts_count = all_acts.shape[0]
@@ -214,7 +223,7 @@ class Buffer:
         self.pointer = acts_count
 
         # Shuffle
-        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0], device=data_cfg.device)]
+        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0])]
         self.pointer = 0
         print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
 
