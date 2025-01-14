@@ -69,8 +69,27 @@ class MultiLayerSAE(nn.Module):
         dec_layers.append(nn.Linear(out_dim, self.act_size))
         self.decoder = nn.Sequential(*dec_layers)
 
+        # Initialize weights with Kaiming
+        self.init_weights()
+
         # Finally, ensure the module is on the right device/dtype
         self.to(self.device_name, self.dtype)
+
+    def init_weights(self):
+        """
+        Apply Kaiming initialization to all Linear layers.
+        """
+        for layer in self.encoder:
+            if isinstance(layer, nn.Linear):
+                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+                if layer.bias is not None:
+                    nn.init.zeros_(layer.bias)
+
+        for layer in self.decoder:
+            if isinstance(layer, nn.Linear):
+                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+                if layer.bias is not None:
+                    nn.init.zeros_(layer.bias)
 
     def forward(self, x):
         # Encode

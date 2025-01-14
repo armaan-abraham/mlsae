@@ -29,7 +29,7 @@ class DataConfig:
     """
 
     seed: int = 49
-    batch_size: int = 4096
+    batch_size: int = 8192
     buffer_mult: int = 384
     seq_len: int = 128
     enc_dtype: str = "fp32"
@@ -39,6 +39,7 @@ class DataConfig:
     layer: int = 0
     device: str = "cuda:0"
     rows_to_load: int = -1
+    dataset_name: str = "NeelNanda/c4-code-tokenized-2b"
 
     @property
     def model_batch_size(self) -> int:
@@ -111,7 +112,7 @@ def load_encoder_training_data(shuffle=True):
     if not training_data_path.exists():
         print("Fetching training data...")
         data = load_dataset(
-            "NeelNanda/c4-code-tokenized-2b", split="train", cache_dir=cache_dir
+            data_cfg.dataset_name, split="train", cache_dir=cache_dir
         )
         if data_cfg.rows_to_load > 0:
             data = data.select(range(min(data_cfg.rows_to_load, len(data))))

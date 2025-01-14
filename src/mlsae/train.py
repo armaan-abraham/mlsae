@@ -32,7 +32,7 @@ class TrainConfig:
             },
         ]
     )
-    l1_values: list = field(default_factory=lambda: [1e-4, 2e-4, 4e-4, 8e-4, 16e-4])
+    l1_values: list = field(default_factory=lambda: [1e-6, 3e-6, 1e-5])
     lr: float = 1e-4
     num_tokens: int = int(2e8)
     beta1: float = 0.9
@@ -53,19 +53,19 @@ def train_step(entry, acts):
 
     loss, feature_acts, l2_loss, l1_loss = autoenc(acts_local)
     l0 = (feature_acts > L0_THRESHOLD).sum().item() / feature_acts.numel()
+    num_nonzero = l0 * autoenc.sparse_dim
     loss.backward()
 
     autoenc.make_decoder_weights_and_grad_unit_norm()
     optimizer.step()
     optimizer.zero_grad()
 
-    return loss.item(), l2_loss.item(), l1_loss.item(), l0, arch_name, l1_coeff
+    return loss.item(), l2_loss.item(), l1_loss.item(), l0, num_nonzero, arch_name, l1_coeff
 
 def main():
     print("Starting training...")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
     wandb.run.name = "multi_sae_single_buffer"
-
 
     wandb.config.update(train_cfg)
     wandb.config.update(data_cfg)
@@ -116,34 +116,35 @@ def main():
     # Create a thread pool as large as number of SAEs (or smaller if you prefer)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(autoencoders))
 
-    for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
-        acts = buffer.next()
+    try:
+        for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
+            acts = buffer.next()
 
-        # Kick off each model's training step in its own thread
-        futures = []
+            # Kick off each model's training step in its own thread
+            futures = []
+            for entry in autoencoders:
+                futures.append(executor.submit(train_step, entry, acts))
+
+            # Collect results
+            for f in futures:
+                loss_val, l2_val, l1_val, l0, num_nonzero, arch_name, l1_coeff = f.result()
+
+                if (step_idx + 1) % 50 == 0:
+                    metrics = {
+                        f"{arch_name}_{l1_coeff}_loss": loss_val,
+                        f"{arch_name}_{l1_coeff}_l2_loss": l2_val,
+                        f"{arch_name}_{l1_coeff}_l1_loss": l1_val,
+                        f"{arch_name}_{l1_coeff}_l0": l0,
+                        f"{arch_name}_{l1_coeff}_num_nonzero": num_nonzero,
+                    },
+                    wandb.log(metrics)
+    finally:
+        print("Saving all SAEs...")
         for entry in autoencoders:
-            futures.append(executor.submit(train_step, entry, acts))
-
-        # Collect results
-        for f in futures:
-            loss_val, l2_val, l1_val, l0, arch_name, l1_coeff = f.result()
-
-            if (step_idx + 1) % 50 == 0:
-                metrics = {
-                    f"{arch_name}_{l1_coeff}_loss": loss_val,
-                    f"{arch_name}_{l1_coeff}_l2_loss": l2_val,
-                    f"{arch_name}_{l1_coeff}_l1_loss": l1_val,
-                    f"{arch_name}_{l1_coeff}_l0": l0,
-                }
-                wandb.log(metrics)
-
-    print("Saving all SAEs...")
-    for entry in autoencoders:
-        autoenc = entry["model"]
-        arch_name = entry["name"]
-        autoenc.save(arch_name)
-
-    wandb.finish()
+            autoenc = entry["model"]
+            arch_name = entry["name"]
+            autoenc.save(arch_name)
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
