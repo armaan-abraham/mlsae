@@ -32,14 +32,17 @@ class DataConfig:
     batch_size: int = 8192
     buffer_mult: int = 384
     seq_len: int = 128
+    dataset_seq_len: int = 1024
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
-    model_name: str = "gelu-2l"
-    site: str = "mlp_out"
-    layer: int = 0
+    model_name: str = "gpt2-small"
+    site: str = "hook_resid_pre"
+    layer: int = 6
     device: str = "cuda:0"
     rows_to_load: int = -1
-    dataset_name: str = "NeelNanda/c4-code-tokenized-2b"
+    dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
+    cache_name: str = "openwebtext_1m"
+    test_data_ratio: float = 0.05
 
     @property
     def model_batch_size(self) -> int:
@@ -104,39 +107,73 @@ d_vocab = model.cfg.d_vocab
 
 def load_encoder_training_data(shuffle=True):
     """
-    Loads or downloads the tokenized dataset. Returns a tensor of tokens.
-    Implements on-disk caching to avoid repeated downloads.
+    Loads or downloads the tokenized dataset. Returns a tensor of tokens
+    for training. Also splits off a given number of test samples and
+    saves them to a separate file in the same cache folder.
     """
-    cache_name = f"c4_code_tokenized_2b"
-    training_data_path = data_dir / f"tokens_{cache_name}.pt"
-    if not training_data_path.exists():
-        print("Fetching training data...")
-        data = load_dataset(
-            data_cfg.dataset_name, split="train", cache_dir=cache_dir
-        )
-        if data_cfg.rows_to_load > 0:
-            data = data.select(range(min(data_cfg.rows_to_load, len(data))))
-        data.save_to_disk(data_dir / f"{cache_name}.hf")
-        data.set_format(type="torch", columns=["tokens"])
-        all_tokens = data["tokens"]
-        # Rearrange to shape (N, 128) for contiguous sequences
-        all_tokens = einops.rearrange(
-            all_tokens, "batch (x seq_len) -> (batch x) seq_len", x=8, seq_len=128
-        )
-        # Set first token to bos_token for each sequence
-        all_tokens[:, 0] = model.tokenizer.bos_token_id
-        # Shuffle the dataset once
-        all_tokens = all_tokens[torch.randperm(all_tokens.shape[0])]
-        torch.save(all_tokens, training_data_path)
-    else:
-        all_tokens = torch.load(training_data_path)
+    split_cache_dir = data_dir / data_cfg.cache_name
+    split_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    if shuffle:
-        all_tokens = all_tokens[torch.randperm(all_tokens.shape[0])]
+    train_data_path = split_cache_dir / "tokens_train.pt"
+    test_data_path = split_cache_dir / "tokens_test.pt"
 
-    print(f"Loaded {all_tokens.shape[0]} rows")
+    # If both train and test files already exist, simply load the train set and return it.
+    if train_data_path.exists() and test_data_path.exists():
+        print("Detected existing split train/test data; loading from disk...")
+        train_tokens = torch.load(train_data_path)
+        # (Optional) If you also want to load test data in the future, you can do:
+        # test_tokens = torch.load(test_data_path)
+        # For now, we only return train_tokens to keep consistent with original usage.
+        if shuffle:
+            train_tokens = train_tokens[torch.randperm(train_tokens.shape[0])]
+        print(f"Loaded {train_tokens.shape[0]} training rows")
+        return train_tokens
 
-    return all_tokens
+    # Otherwise, fetch data and split.
+    # We won't use the old single-file path, so skip that logic entirely.
+    print("Fetching training data...")
+    data = load_dataset(
+        data_cfg.dataset_name, split="train", cache_dir=cache_dir
+    )
+    if data_cfg.rows_to_load > 0:
+        data = data.select(range(min(data_cfg.rows_to_load, len(data))))
+    data.save_to_disk(data_dir / f"{data_cfg.cache_name}.hf")
+    data.set_format(type="torch", columns=["input_ids"])
+    all_tokens = data["input_ids"]
+    assert (
+        all_tokens.shape[1] == data_cfg.dataset_seq_len
+    ), "Dataset sequence length must match dataset_seq_len"
+
+    # Rearrange to shape (N, seq_len) for contiguous sequences
+    all_tokens = einops.rearrange(
+        all_tokens,
+        "batch (x seq_len) -> (batch x) seq_len",
+        x=data_cfg.dataset_seq_len // data_cfg.seq_len,
+        seq_len=data_cfg.seq_len,
+    )
+
+    # Set first token to bos_token for each sequence
+    all_tokens[:, 0] = model.tokenizer.bos_token_id
+
+    # Shuffle once overall
+    all_tokens = all_tokens[torch.randperm(all_tokens.shape[0])]
+
+    # Split off test samples
+    num_test = int(all_tokens.shape[0] * data_cfg.test_data_ratio)
+    test_tokens = all_tokens[:num_test]
+    train_tokens = all_tokens[num_test:]
+
+    # Save both splits
+    torch.save(train_tokens, train_data_path)
+    torch.save(test_tokens, test_data_path)
+    print(
+        f"Created train/test split: "
+        f"{train_tokens.shape[0]} train rows, "
+        f"{test_tokens.shape[0]} test rows"
+    )
+
+    # Return only the training portion for downstream usage
+    return train_tokens
 
 
 class Buffer:
@@ -179,6 +216,7 @@ class Buffer:
                     stop_at_layer=data_cfg.layer + 1,
                     names_filter=data_cfg.act_name,
                 )
+                print(cache[data_cfg.act_name].shape)
                 acts = cache[data_cfg.act_name].reshape(-1, data_cfg.act_size)
 
                 # Copy these activations to the buffer

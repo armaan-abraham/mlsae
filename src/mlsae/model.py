@@ -80,7 +80,7 @@ class MultiLayerSAE(nn.Module):
                 nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
                 nn.init.zeros_(layer.bias)
 
-    def forward(self, x, step_idx):
+    def forward(self, x):
         # Encode
         encoded = self.encoder(x)
         feature_acts = F.relu(encoded)
@@ -89,16 +89,17 @@ class MultiLayerSAE(nn.Module):
         if self.k < feature_acts.shape[1]:
             # mask out everything except top k in each row
             _, idxs = torch.topk(feature_acts, self.k, dim=1)
+            assert idxs.shape == (feature_acts.shape[0], self.k), f"Top-k indices must have shape (batch_size, k), got {idxs.shape}"
             mask = torch.zeros_like(feature_acts, dtype=feature_acts.dtype).scatter_(1, idxs, 1.0)
+            assert mask.sum(dim=1).allclose(torch.ones(feature_acts.shape[0]) * self.k)
             feature_acts = feature_acts * mask
 
         # Decode
         reconstructed = self.decoder(feature_acts)
         # MSE loss as reconstruction loss
-        l2_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        loss = l2_loss
+        loss = (reconstructed.float() - x.float()).pow(2).mean()
 
-        return loss, feature_acts, l2_loss
+        return loss, feature_acts
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):

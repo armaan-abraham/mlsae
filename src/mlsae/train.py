@@ -17,21 +17,27 @@ class TrainConfig:
                 "decoder_dim_mults": [],
             },
             {
-                "name": "1-0",
+                "name": "1-0.2",
                 "encoder_dim_mults": [2],
-                "sparse_dim_mult": 32,
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [],
+            },
+            {
+                "name": "1-0.1",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
             },
             {
                 "name": "1-1",
                 "encoder_dim_mults": [2],
-                "sparse_dim_mult": 32,
+                "sparse_dim_mult": 16,
                 "decoder_dim_mults": [2],
             },
         ]
     )
     # Instead of multiple L1 coefficients, use multiple k values
-    k_values: list = field(default_factory=lambda: [64, 128, 256])
+    k_values: list = field(default_factory=lambda: [32, 128, 512])
 
     lr: float = 1e-4
     num_tokens: int = int(2e8)
@@ -42,23 +48,22 @@ class TrainConfig:
 
 train_cfg = TrainConfig()
 
-def train_step(entry, acts, step_idx):
+def train_step(entry, acts):
     device = entry["device"]
     acts_local = acts.to(device, non_blocking=True)
     autoenc = entry["model"]
     optimizer = entry["optimizer"]
     arch_name = entry["name"]
-    k_val = entry["k"]  # top-k value
+    k_val = entry["k"]
 
-    loss, feature_acts, l2_loss = autoenc(acts_local, step_idx)
-    # We no longer compute l0 or l1 losses
+    loss, feature_acts = autoenc(acts_local)
 
     loss.backward()
     autoenc.make_decoder_weights_and_grad_unit_norm()
     optimizer.step()
     optimizer.zero_grad()
 
-    return loss.item(), l2_loss.item(), arch_name, k_val
+    return loss.item(), arch_name, k_val
 
 def main():
     print("Starting training...")
@@ -121,13 +126,12 @@ def main():
                 futures.append(executor.submit(train_step, entry, acts, step_idx))
 
             for f in futures:
-                loss_val, l2_val, arch_name, k_val = f.result()
+                loss_val, arch_name, k_val = f.result()
 
                 # Log periodically
                 if (step_idx + 1) % 50 == 0:
                     metrics = {
                         f"{arch_name}_k={k_val}_loss": loss_val,
-                        f"{arch_name}_k={k_val}_l2_loss": l2_val,
                     }
                     wandb.log(metrics)
     finally:
