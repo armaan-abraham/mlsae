@@ -1,10 +1,12 @@
-import torch
-import csv
-from utils import Buffer, Config
-from mlsae.model import MultiLayerSAE
-import tqdm
 import argparse
+import csv
 import json
+
+import torch
+import tqdm
+from utils import Buffer, Config
+
+from mlsae.model import MultiLayerSAE
 
 
 def evaluate_autoencoder(model_paths, cfg: Config, output_csv):

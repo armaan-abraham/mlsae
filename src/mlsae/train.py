@@ -1,11 +1,14 @@
-import torch
-import tqdm
-import wandb
 import concurrent.futures
-from mlsae.model import MultiLayerSAE
-from mlsae.utils import data_cfg, Buffer
 from dataclasses import dataclass, field
+
+import torch
 import torch.multiprocessing as mp
+import tqdm
+
+import wandb
+from mlsae.model import MultiLayerSAE
+from mlsae.utils import Buffer, data_cfg
+
 
 @dataclass
 class TrainConfig:
@@ -47,7 +50,9 @@ class TrainConfig:
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
 
+
 train_cfg = TrainConfig()
+
 
 def train_step(entry, acts):
     device = entry["device"]
@@ -65,6 +70,7 @@ def train_step(entry, acts):
     optimizer.zero_grad()
 
     return loss.item(), arch_name, k_val
+
 
 def main():
     print("Starting training...")
@@ -136,7 +142,7 @@ def main():
                     metrics = {
                         f"{arch_name}_k={k_val}_loss": loss_val,
                     }
-                    # wandb.log(metrics)
+                    wandb.log(metrics)
     finally:
         print("Saving all SAEs...")
         for entry in autoencoders:
@@ -144,6 +150,7 @@ def main():
             arch_name = entry["name"]
             autoenc.save(arch_name)
         wandb.finish()
+
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)

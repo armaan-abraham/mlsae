@@ -1,22 +1,22 @@
 import os
-import torch
-import numpy as np
-import einops
+import time
+from dataclasses import dataclass
 from pathlib import Path
+
+import einops
+import torch
+import torch.multiprocessing as mp
 import transformer_lens
 from datasets import load_dataset
-from dataclasses import dataclass
-import time
-import concurrent.futures  
-import torch.multiprocessing as mp
 
 this_dir = Path(__file__).parent
+
 
 @dataclass
 class DataConfig:
     seed: int = 49
-    buffer_batch_size_tokens: int = 8192
-    buffer_size_buffer_batch_size_mult: int = 2048
+    buffer_batch_size_tokens: int = 16384
+    buffer_size_buffer_batch_size_mult: int = 1024
     seq_len: int = 64
     model_batch_size_seqs: int = 128
     dataset_row_len: int = 1024
@@ -50,6 +50,7 @@ class DataConfig:
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
 
+
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 data_cfg = DataConfig()
@@ -67,19 +68,18 @@ for dir_path in [cache_dir, data_dir, model_dir]:
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
+
 def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: dict):
     device = f"cuda:{device_id}"
     local_data_cfg = DataConfig(**data_cfg_dict)
-    
+
     DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
     local_dtype = DTYPES[local_data_cfg.enc_dtype]
 
-    local_model = (
-        transformer_lens.HookedTransformer
-        .from_pretrained(local_data_cfg.model_name, device=device)
-        .to(local_dtype)
-    )
+    local_model = transformer_lens.HookedTransformer.from_pretrained(
+        local_data_cfg.model_name, device=device
+    ).to(local_dtype)
 
     try:
         while True:
@@ -105,7 +105,9 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
                         return_cache_object=True,
                     )
                     acts = cache.cache_dict[local_data_cfg.act_name]
-                    acts = acts.reshape(acts.shape[0] * acts.shape[1], local_data_cfg.act_size)
+                    acts = acts.reshape(
+                        acts.shape[0] * acts.shape[1], local_data_cfg.act_size
+                    )
                     all_acts.append(acts.cpu())
 
             results.put(torch.cat(all_acts, dim=0).to("cpu"))
@@ -113,6 +115,7 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
     except Exception as e:
         results.put(e)
         raise
+
 
 def stream_training_chunks(data_cfg, cache_dir):
     dataset_iter = load_dataset(
@@ -125,12 +128,16 @@ def stream_training_chunks(data_cfg, cache_dir):
         data_cfg.buffer_refresh_size_seqs // data_cfg.seqs_per_dataset_row
     )
     for row_batch in row_batch_iter:
-        yield torch.tensor(row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device)
+        yield torch.tensor(
+            row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device
+        )
+
 
 class Buffer:
     """
     Streams tokens and fills self.buffer with model activations.
     """
+
     def __init__(self):
         print("Initializing buffer...")
         self.token_stream = stream_training_chunks(data_cfg, cache_dir)
@@ -222,7 +229,9 @@ class Buffer:
 
     @torch.no_grad()
     def next(self):
-        out = self.buffer[self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens]
+        out = self.buffer[
+            self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens
+        ]
         self.pointer += data_cfg.buffer_batch_size_tokens
         if self.pointer > self.buffer.shape[0] // 2 - data_cfg.buffer_batch_size_tokens:
             self.refresh()
@@ -233,11 +242,11 @@ class Buffer:
         # Send termination signal to all workers
         for _ in self.workers:
             self.tasks.put(None)  # None is the termination signal
-        
+
         # Join all worker processes
         for worker in self.workers:
             worker.join()
-            
+
         # Close the queues
         self.tasks.close()
         self.results.close()

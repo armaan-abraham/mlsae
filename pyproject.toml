@@ -32,3 +32,8 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mlsae"]
+
+[tool.ruff.lint]
+select = [
+    "I",
+]

@@ -1,11 +1,14 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from mlsae.utils import DTYPES
 import json
 from pathlib import Path
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from mlsae.utils import DTYPES
+
 model_dir = Path(__file__).parent / "checkpoints"
+
 
 class MultiLayerSAE(nn.Module):
     """
@@ -72,12 +75,12 @@ class MultiLayerSAE(nn.Module):
     def init_weights(self):
         for layer in self.encoder:
             if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+                nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
                 nn.init.zeros_(layer.bias)
 
         for layer in self.decoder:
             if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+                nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
                 nn.init.zeros_(layer.bias)
 
     def forward(self, x):
@@ -89,9 +92,16 @@ class MultiLayerSAE(nn.Module):
         if self.k < feature_acts.shape[1]:
             # mask out everything except top k in each row
             _, idxs = torch.topk(feature_acts, self.k, dim=1)
-            assert idxs.shape == (feature_acts.shape[0], self.k), f"Top-k indices must have shape (batch_size, k), got {idxs.shape}"
-            mask = torch.zeros_like(feature_acts, dtype=feature_acts.dtype).scatter_(1, idxs, 1.0)
-            assert mask.sum(dim=1).allclose(torch.tensor(self.k, dtype=feature_acts.dtype))
+            assert idxs.shape == (
+                feature_acts.shape[0],
+                self.k,
+            ), f"Top-k indices must have shape (batch_size, k), got {idxs.shape}"
+            mask = torch.zeros_like(feature_acts, dtype=feature_acts.dtype).scatter_(
+                1, idxs, 1.0
+            )
+            assert mask.sum(dim=1).allclose(
+                torch.tensor(self.k, dtype=feature_acts.dtype)
+            )
             feature_acts = feature_acts * mask
             feature_acts = torch.relu(feature_acts)
 
