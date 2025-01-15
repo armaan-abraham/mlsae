@@ -1,21 +1,22 @@
 # %%
 import argparse
 import csv
+import importlib
 import json
 
+import pandas as pd
 import torch
 import tqdm
-import pandas as pd
-import importlib
 
 import mlsae.model
 import mlsae.utils
+
 importlib.reload(mlsae.model)
 importlib.reload(mlsae.utils)
-from mlsae.model import DeepSAE
 from pathlib import Path
-from mlsae.utils import Buffer, data_cfg
 
+from mlsae.model import DeepSAE
+from mlsae.utils import Buffer, data_cfg
 
 # Load gpt2 model
 
@@ -33,15 +34,12 @@ MODELS_TO_EVALUATE = [
     {"architecture_name": "0-0", "version": 23},
     {"architecture_name": "0-0", "version": 24},
     {"architecture_name": "0-0", "version": 25},
-
     {"architecture_name": "1-0.1", "version": 3},
     {"architecture_name": "1-0.1", "version": 4},
     {"architecture_name": "1-0.1", "version": 5},
-   
     {"architecture_name": "1-0.2", "version": 18},
     {"architecture_name": "1-0.2", "version": 19},
     {"architecture_name": "1-0.2", "version": 20},
-
     {"architecture_name": "1-1", "version": 3},
     {"architecture_name": "1-1", "version": 4},
     {"architecture_name": "1-1", "version": 5},
@@ -69,9 +67,7 @@ for mp in MODELS_TO_EVALUATE:
 
     eval_batches = data_cfg.eval_tokens // data_cfg.buffer_batch_size_tokens
     with torch.no_grad():
-        for _ in tqdm.trange(
-            eval_batches, desc=f"Evaluating {arch_name}, v{version}"
-        ):
+        for _ in tqdm.trange(eval_batches, desc=f"Evaluating {arch_name}, v{version}"):
             acts = buffer.next()
             acts = acts.to(autoenc.device, autoenc.dtype)
             loss, feature_acts = autoenc(acts)

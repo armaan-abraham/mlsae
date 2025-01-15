@@ -20,13 +20,7 @@ class TrainConfig:
                 "decoder_dim_mults": [],
             },
             {
-                "name": "1-0.2",
-                "encoder_dim_mults": [2],
-                "sparse_dim_mult": 16,
-                "decoder_dim_mults": [],
-            },
-            {
-                "name": "1-0.1",
+                "name": "1-0",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
@@ -39,8 +33,8 @@ class TrainConfig:
             },
         ]
     )
-    # Instead of multiple L1 coefficients, use multiple k values
-    k_values: list = field(default_factory=lambda: [32, 128, 512])
+    # Replace old k_values with multiple L1 coefficients to try
+    l1_values: list = field(default_factory=lambda: [1e-6, 2e-6, 4e-6, 2e-7, 4e-7])
 
     lr: float = 1e-4
     num_tokens: int = int(5e8)
@@ -59,16 +53,23 @@ def train_step(entry, acts):
     autoenc = entry["model"]
     optimizer = entry["optimizer"]
     arch_name = entry["name"]
-    k_val = entry["k"]
+    l1_val = entry["l1_coeff"]
 
-    loss, feature_acts = autoenc(acts_local)
+    loss, mse_loss, l1_loss, nonzero_acts, feature_acts = autoenc(acts_local)
 
     loss.backward()
     autoenc.make_decoder_weights_and_grad_unit_norm()
     optimizer.step()
     optimizer.zero_grad()
 
-    return loss.item(), arch_name, k_val
+    return (
+        loss.item(),
+        mse_loss.item(),
+        l1_loss.item(),
+        nonzero_acts.item(),
+        arch_name,
+        l1_val,
+    )
 
 
 def main():
@@ -76,7 +77,7 @@ def main():
     for k, v in data_cfg.__dict__.items():
         print(f"{k}: {v}")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
-    wandb.run.name = "multi_sae_single_buffer_topk"
+    wandb.run.name = "multi_sae_single_buffer_l1"
 
     wandb.config.update(train_cfg)
     wandb.config.update(data_cfg)
@@ -90,8 +91,9 @@ def main():
     autoencoders = []
     idx = 0
 
+    # Loop over different architectures and L1 coefficients
     for arch_dict in train_cfg.architectures:
-        for k_val in train_cfg.k_values:
+        for l1_val in train_cfg.l1_values:
             device_id = idx % n_gpus
             device_str = f"cuda:{device_id}"
             idx += 1
@@ -101,9 +103,9 @@ def main():
                 sparse_dim_mult=arch_dict["sparse_dim_mult"],
                 decoder_dim_mults=arch_dict["decoder_dim_mults"],
                 act_size=data_cfg.act_size,
-                top_k=k_val,  # Pass the top-k value
                 enc_dtype=data_cfg.enc_dtype,
                 device=device_str,
+                l1_coeff=l1_val,  # pass the L1 coefficient
             )
             optimizer = torch.optim.Adam(
                 autoenc.parameters(),
@@ -116,7 +118,7 @@ def main():
                     "optimizer": optimizer,
                     "device": device_str,
                     "name": arch_dict["name"],
-                    "k": k_val,
+                    "l1_coeff": l1_val,
                 }
             )
 
@@ -134,12 +136,17 @@ def main():
                 futures.append(executor.submit(train_step, entry, acts))
 
             for f in futures:
-                loss_val, arch_name, k_val = f.result()
+                loss_val, mse_val, l1_val_loss, nonzero_acts, arch_name, l1_val = (
+                    f.result()
+                )
 
                 # Log periodically
                 if (step_idx + 1) % 50 == 0:
                     metrics = {
-                        f"{arch_name}_k={k_val}_loss": loss_val,
+                        f"{arch_name}_l1={l1_val}_loss": loss_val,
+                        f"{arch_name}_l1={l1_val}_mse": mse_val,
+                        f"{arch_name}_l1={l1_val}_l1_loss": l1_val_loss,
+                        f"{arch_name}_l1={l1_val}_nonzero_acts": nonzero_acts,
                     }
                     wandb.log(metrics)
     finally:

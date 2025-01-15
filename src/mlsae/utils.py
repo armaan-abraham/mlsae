@@ -15,8 +15,8 @@ this_dir = Path(__file__).parent
 @dataclass
 class DataConfig:
     seed: int = 49
-    buffer_batch_size_tokens: int = 8192
-    buffer_size_buffer_batch_size_mult: int = 1030
+    buffer_batch_size_tokens: int = 16384
+    buffer_size_buffer_batch_size_mult: int = 1024
     seq_len: int = 64
     model_batch_size_seqs: int = 128
     dataset_row_len: int = 1024
@@ -56,10 +56,11 @@ class DataConfig:
     @property
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
-    
+
     @property
     def eval_tokens(self) -> int:
         return self.buffer_batch_size_tokens * self.eval_tokens_buffer_batch_size_mult
+
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
@@ -138,9 +139,7 @@ def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = F
         buffer_size=buffer_size,
         seed=data_cfg.seed if not eval else data_cfg.eval_data_seed,
     )
-    row_batch_iter = dataset_iter.batch(
-        buffer_size // 2
-    )
+    row_batch_iter = dataset_iter.batch(buffer_size // 2)
     for row_batch in row_batch_iter:
         yield torch.tensor(
             row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device
@@ -296,14 +295,11 @@ class Buffer:
                     return_cache_object=True,
                 )
                 acts = cache.cache_dict[data_cfg.act_name]
-                acts = acts.reshape(
-                    acts.shape[0] * acts.shape[1],
-                    data_cfg.act_size
-                )
+                acts = acts.reshape(acts.shape[0] * acts.shape[1], data_cfg.act_size)
                 all_acts_list.append(acts.cpu())
 
         return torch.cat(all_acts_list, dim=0)
-    
+
     @torch.no_grad()
     def next(self):
         out = self.buffer[
