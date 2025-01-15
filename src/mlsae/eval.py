@@ -1,13 +1,21 @@
+# %%
 import argparse
 import csv
 import json
 
 import torch
 import tqdm
-from utils import Buffer, data_cfg
 import pandas as pd
+import importlib
 
+import mlsae.model
+import mlsae.utils
+importlib.reload(mlsae.model)
+importlib.reload(mlsae.utils)
 from mlsae.model import DeepSAE
+from pathlib import Path
+from mlsae.utils import Buffer, data_cfg
+
 
 # Load gpt2 model
 
@@ -20,68 +28,75 @@ from mlsae.model import DeepSAE
 
 # Plot results for each SAE
 
-def evaluate_autoencoder(model_paths, output_csv):
-    """
-    model_paths is a list of dicts with { "architecture_name": str, "version": int }
-    Evaluates each model on average L0 and average MSE.
-    Saves results to output_csv.
-    """
-    buffer = Buffer(eval=True)
+# Define models to evaluate
+MODELS_TO_EVALUATE = [
+    {"architecture_name": "0-0", "version": 23},
+    {"architecture_name": "0-0", "version": 24},
+    {"architecture_name": "0-0", "version": 25},
 
-    results = []
-    for mp in model_paths:
-        arch_name = mp["architecture_name"]
-        version = mp["version"]
-        autoenc = DeepSAE.load(arch_name, version)
-        autoenc.eval()
+    {"architecture_name": "1-0.1", "version": 3},
+    {"architecture_name": "1-0.1", "version": 4},
+    {"architecture_name": "1-0.1", "version": 5},
+   
+    {"architecture_name": "1-0.2", "version": 18},
+    {"architecture_name": "1-0.2", "version": 19},
+    {"architecture_name": "1-0.2", "version": 20},
 
-        total_mse = 0.0
-        total_count = 0
-
-        eval_batches = data_cfg.eval_tokens // data_cfg.buffer_batch_size_tokens
-        with torch.no_grad():
-            for _ in tqdm.trange(
-                eval_batches, desc=f"Evaluating {arch_name}, v{version}"
-            ):
-                acts = buffer.next()
-                loss, feature_acts = autoenc(acts)
-
-                # MSE
-                total_mse += loss.item()
-                total_count += acts.shape[0]
-
-        avg_mse = total_mse / total_count
-        results.append(
-            {
-                "architecture_name": arch_name,
-                "version": version,
-                "avg_mse": avg_mse,
-            }
-        )
-
-    # Convert results to pandas DataFrame and save to CSV
-    df = pd.DataFrame(results)
-    df.to_csv(output_csv, index=False)
-    print(f"Saved evaluation results to {output_csv}")
+    {"architecture_name": "1-1", "version": 3},
+    {"architecture_name": "1-1", "version": 4},
+    {"architecture_name": "1-1", "version": 5},
+]
+output_dir = Path(__file__.parent / "results")
+output_dir.mkdir(parents=True, exist_ok=True)
+output_csv = output_dir / "evaluation_results.csv"
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model_paths",
-        type=str,
-        required=True,
-        help=(
-            'JSON string with a list of {"architecture_name": str, "version": int} to evaluate. '
-            'Example: \'[{"architecture_name":"arch1","version":0},{"architecture_name":"arch2","version":2}]\''
-        ),
+# %%
+buffer = Buffer(eval=True, use_multiprocessing=False)
+
+# %%
+results = []
+for mp in MODELS_TO_EVALUATE:
+    arch_name = mp["architecture_name"]
+    version = mp["version"]
+    autoenc = DeepSAE.load(arch_name, version)
+    buffer.pointer = 0
+    autoenc.to("cuda")
+    autoenc.eval()
+
+    total_mse = 0.0
+    total_count = 0
+
+    eval_batches = data_cfg.eval_tokens // data_cfg.buffer_batch_size_tokens
+    with torch.no_grad():
+        for _ in tqdm.trange(
+            eval_batches, desc=f"Evaluating {arch_name}, v{version}"
+        ):
+            acts = buffer.next()
+            acts = acts.to(autoenc.device, autoenc.dtype)
+            loss, feature_acts = autoenc(acts)
+
+            # MSE
+            total_mse += loss.item()
+            total_count += acts.shape[0]
+
+    avg_mse = total_mse / total_count
+    print(f"Evaluated {total_count} tokens")
+    results.append(
+        {
+            "architecture_name": arch_name,
+            "k": autoenc.k,
+            "sparse_dim": autoenc.sparse_dim,
+            "encoder_dim": autoenc.encoder_dims[0] if autoenc.encoder_dims else None,
+            "decoder_dim": autoenc.decoder_dims[0] if autoenc.decoder_dims else None,
+            "version": version,
+            "avg_mse": avg_mse,
+        }
     )
-    parser.add_argument("--output_csv", type=str, default="evaluation_results.csv")
-    args = parser.parse_args()
 
-    mp_list = json.loads(args.model_paths)
-    evaluate_autoencoder(mp_list, cfg, args.output_csv)
+# Convert results to pandas DataFrame and save to CSV
+df = pd.DataFrame(results)
+df.to_csv(output_csv, index=False)
+print(f"Saved evaluation results to {output_csv}")
 
-
-if __name__ == "__main__":
-    main()
+# %%

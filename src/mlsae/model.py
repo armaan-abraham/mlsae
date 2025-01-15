@@ -35,13 +35,13 @@ class DeepSAE(nn.Module):
         assert self.k < self.sparse_dim, "top_k must be less than sparse_dim"
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
-        self.device_name = device
+        self.device = device
 
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
         print(f"K: {self.k}")
-        print(f"Device: {self.device_name}")
+        print(f"Device: {self.device}")
         print(f"Dtype: {self.dtype}")
 
         # Build encoder
@@ -70,7 +70,7 @@ class DeepSAE(nn.Module):
         self.decoder = nn.Sequential(*dec_layers)
 
         self.init_weights()
-        self.to(self.device_name, self.dtype)
+        self.to(self.device, self.dtype)
 
     def init_weights(self):
         for layer in self.encoder:
@@ -148,7 +148,7 @@ class DeepSAE(nn.Module):
             "act_size": self.act_size,
             "top_k": self.k,
             "enc_dtype": self.enc_dtype,
-            "device": self.device_name,
+            "device": self.device,
         }
         with open(save_path / f"{version}_cfg.json", "w") as f:
             json.dump(config_dict, f)
@@ -161,17 +161,16 @@ class DeepSAE(nn.Module):
         with open(load_path / f"{version}_cfg.json", "r") as f:
             config_dict = json.load(f)
         new_model = cls(
-            encoder_dim_mults=config_dict["encoder_dims"],
+            encoder_dim_mults=[dim // config_dict["act_size"] for dim in config_dict["encoder_dims"]],
             sparse_dim_mult=config_dict["sparse_dim"] // config_dict["act_size"],
-            decoder_dim_mults=config_dict["decoder_dims"],
+            decoder_dim_mults=[dim // config_dict["act_size"] for dim in config_dict["decoder_dims"]],
             act_size=config_dict["act_size"],
             top_k=config_dict["top_k"],
             enc_dtype=config_dict["enc_dtype"],
-            device=config_dict["device"],
         )
 
-        state_dict = torch.load(load_path / f"{version}.pt")
+        state_dict = torch.load(load_path / f"{version}.pt", map_location="cpu")
         new_model.load_state_dict(state_dict)
-        new_model.to(new_model.device, new_model.dtype)
+        new_model.to(new_model.dtype)
 
         return new_model
