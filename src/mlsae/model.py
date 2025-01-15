@@ -10,7 +10,7 @@ from mlsae.utils import DTYPES
 model_dir = Path(__file__).parent / "checkpoints"
 
 
-class MultiLayerSAE(nn.Module):
+class DeepSAE(nn.Module):
     """
     Multi-layer sparse autoencoder with a single sparse representation layer.
     """

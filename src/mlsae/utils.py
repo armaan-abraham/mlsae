@@ -28,7 +28,10 @@ class DataConfig:
     act_size: int = 768
     device: str = "cuda:0"
     dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
-    llm_device_count: int = 8
+    llm_device_count: int = 1
+
+    eval_data_seed: int = 59
+    eval_tokens: int = int(1e4)
 
     @property
     def seqs_per_dataset_row(self) -> int:
@@ -47,9 +50,13 @@ class DataConfig:
         return self.buffer_size_seqs // 2
 
     @property
+    def buffer_refresh_size_rows(self) -> int:
+        return self.buffer_refresh_size_seqs // self.seqs_per_dataset_row
+
+    @property
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
-
+    
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
@@ -117,15 +124,19 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
         raise
 
 
-def stream_training_chunks(data_cfg, cache_dir):
+def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = False):
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
         split="train",
         streaming=True,
         cache_dir=cache_dir,
     )
+    dataset_iter = dataset_iter.shuffle(
+        buffer_size=buffer_size,
+        seed=data_cfg.seed if not eval else data_cfg.eval_data_seed,
+    )
     row_batch_iter = dataset_iter.batch(
-        data_cfg.buffer_refresh_size_seqs // data_cfg.seqs_per_dataset_row
+        buffer_size / 2
     )
     for row_batch in row_batch_iter:
         yield torch.tensor(
@@ -138,14 +149,20 @@ class Buffer:
     Streams tokens and fills self.buffer with model activations.
     """
 
-    def __init__(self):
+    def __init__(self, eval: bool = False):
         print("Initializing buffer...")
-        self.token_stream = stream_training_chunks(data_cfg, cache_dir)
+        self.token_stream = stream_training_chunks(
+            data_cfg,
+            cache_dir,
+            data_cfg.buffer_refresh_size_rows * 2,
+            eval=eval,
+        )
         self.buffer = torch.zeros(
             (data_cfg.buffer_size_tokens, data_cfg.act_size),
             dtype=torch.float32,  # or DTYPES[data_cfg.enc_dtype], etc.
             device="cpu",
         )
+        mp.set_start_method("spawn", force=True)
 
         self.tasks = mp.Queue()
         self.results = mp.Queue()

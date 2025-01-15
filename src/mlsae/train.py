@@ -2,11 +2,10 @@ import concurrent.futures
 from dataclasses import dataclass, field
 
 import torch
-import torch.multiprocessing as mp
 import tqdm
 
 import wandb
-from mlsae.model import MultiLayerSAE
+from mlsae.model import DeepSAE
 from mlsae.utils import Buffer, data_cfg
 
 
@@ -97,7 +96,7 @@ def main():
             device_str = f"cuda:{device_id}"
             idx += 1
 
-            autoenc = MultiLayerSAE(
+            autoenc = DeepSAE(
                 encoder_dim_mults=arch_dict["encoder_dim_mults"],
                 sparse_dim_mult=arch_dict["sparse_dim_mult"],
                 decoder_dim_mults=arch_dict["decoder_dim_mults"],
@@ -153,5 +152,4 @@ def main():
 
 
 if __name__ == "__main__":
-    mp.set_start_method("spawn", force=True)
     main()
