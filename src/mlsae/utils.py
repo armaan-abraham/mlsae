@@ -2,15 +2,13 @@ import os
 import torch
 import numpy as np
 import einops
-import pprint
 from pathlib import Path
 import transformer_lens
 from datasets import load_dataset
 from dataclasses import dataclass
 import time
-import threading
-import concurrent.futures  # We'll use ThreadPoolExecutor
-# ... all your other imports ...
+import concurrent.futures  
+import torch.multiprocessing as mp
 
 this_dir = Path(__file__).parent
 
@@ -27,10 +25,11 @@ class DataConfig:
     model_name: str = "gpt2-small"
     site: str = "resid_pre"
     layer: int = 6
-    act_size: int = 768 # This is checked when we run the model
+    act_size: int = 768
     device: str = "cuda:0"
     dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
     test_data_ratio: float = 0.05
+    llm_device_count: int = 2
 
     @property
     def seqs_per_dataset_row(self) -> int:
@@ -52,19 +51,14 @@ class DataConfig:
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
 
+DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 data_cfg = DataConfig()
-
 for k, v in data_cfg.__dict__.items():
     print(f"{k}: {v}")
-properties = [attr for attr in dir(DataConfig) if isinstance(getattr(DataConfig, attr), property)]
-for prop in properties:
-    print(f"{prop}: {getattr(data_cfg, prop)}")
-
-assert data_cfg.dataset_row_len % data_cfg.seq_len == 0
-assert data_cfg.buffer_refresh_size_seqs % data_cfg.model_batch_size_seqs == 0
 
 # Create directories
+this_dir = Path(__file__).parent
 cache_dir = this_dir / "cache"
 data_dir = this_dir / "data"
 model_dir = this_dir / "checkpoints"
@@ -76,30 +70,45 @@ for dir_path in [cache_dir, data_dir, model_dir]:
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
-DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-np.random.seed(data_cfg.seed)
 
-# ---- Prepare multiple model replicas (one per GPU) ----
-# device_count = torch.cuda.device_count()
-device_count = 4
-print(f"Device count: {device_count}")
-    
-models_on_each_gpu = []
-for dev_id in range(device_count):
-    dev_str = f"cuda:{dev_id}"
-    model_i = (
+def run_inference_on_device(device_idx, seq_chunk, data_cfg_dict):
+    local_data_cfg = DataConfig(**data_cfg_dict)
+    DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
+    local_dtype = DTYPES[local_data_cfg.enc_dtype]
+    device_str = f"cuda:{device_idx}"
+
+    # Each process loads its own model
+    local_model = (
         transformer_lens.HookedTransformer
-        .from_pretrained(data_cfg.model_name, device=dev_str)
-        .to(DTYPES[data_cfg.enc_dtype])
+        .from_pretrained(local_data_cfg.model_name, device=device_str)
+        .to(local_dtype)
     )
-    models_on_each_gpu.append(model_i)
 
-for i, model_i in enumerate(models_on_each_gpu):
-    # Check the first parameter just to confirm which device it lives on
-    param_name, param = next(model_i.named_parameters())
-    print(f"Model {i}, param {param_name} => {param.device}")
+    # BOS
+    seq_chunk[:, 0] = local_model.tokenizer.bos_token_id
 
-def stream_training_chunks():
+    batch_size_seqs = local_data_cfg.model_batch_size_seqs
+    all_acts = []
+    seq_chunk = seq_chunk.to(device_str)
+
+    with torch.autocast("cuda", local_dtype):
+        for start in range(0, seq_chunk.shape[0], batch_size_seqs):
+            start_time = time.time()
+            sub_chunk = seq_chunk[start : start + batch_size_seqs]
+            _, cache = local_model.run_with_cache(
+                sub_chunk,
+                stop_at_layer=local_data_cfg.layer + 1,
+                names_filter=local_data_cfg.act_name,
+                return_cache_object=True,
+            )
+            acts = cache.cache_dict[local_data_cfg.act_name]
+            acts = acts.reshape(acts.shape[0] * acts.shape[1], local_data_cfg.act_size)
+            all_acts.append(acts.cpu())
+            print(f"Inference time for {start}: {time.time() - start_time:.2f} seconds")
+
+    return torch.cat(all_acts, dim=0)
+
+def stream_training_chunks(data_cfg, cache_dir):
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
         split="train",
@@ -117,10 +126,10 @@ class Buffer:
     Streams tokens and fills self.buffer with model activations.
     """
     def __init__(self):
-        self.token_stream = stream_training_chunks()
+        self.token_stream = stream_training_chunks(data_cfg, cache_dir)
         self.buffer = torch.zeros(
             (data_cfg.buffer_size_tokens, data_cfg.act_size),
-            dtype=DTYPES[data_cfg.enc_dtype],
+            dtype=torch.float32,  # or DTYPES[data_cfg.enc_dtype], etc.
             device="cpu",
         )
         self.pointer = 0
@@ -149,90 +158,47 @@ class Buffer:
             token=data_cfg.seq_len,
             seq=data_cfg.seqs_per_dataset_row,
         )
-        seqs[:, 0] = models_on_each_gpu[0].tokenizer.bos_token_id
-        assert seqs.shape[0] % data_cfg.buffer_refresh_size_seqs == 0
 
-        # Each GPU processes an equal portion of seqs
         total_seqs = seqs.shape[0]
-        num_devices = len(models_on_each_gpu)
+        num_devices = data_cfg.llm_device_count
         chunk_size = total_seqs // num_devices
 
-        with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
-            # Collect partial activations from each thread
-            def run_inference_on_device(device_idx, seq_chunk):
-                device_str = f"cuda:{device_idx}"
-                local_model = models_on_each_gpu[device_idx]
-                batch_size_seqs = data_cfg.model_batch_size_seqs
-                all_acts = []
+        seqs_list = []
+        for i in range(num_devices):
+            start_idx = i * chunk_size
+            end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
+            seqs_list.append(seqs[start_idx:end_idx])
 
-                start_time = time.time()
-                seq_chunk = seq_chunk.to(device_str)
+        print("Running inference (spawn processes)...")
+        data_cfg_dict = data_cfg.__dict__
 
-                for start in range(0, seq_chunk.shape[0], batch_size_seqs):
-                    start_time = time.time()
-                    sub_chunk = seq_chunk[start : start + batch_size_seqs]
-                    _, cache = local_model.run_with_cache(
-                        sub_chunk,
-                        stop_at_layer=data_cfg.layer + 1,
-                        names_filter=data_cfg.act_name,
-                        return_cache_object=True,
-                    )
-                    print(f"Cache device {device_idx}: {dir(cache)}")
-                    acts = cache.cache_dict[data_cfg.act_name]  # shape: [batch_size, seq_len, act_size]
-                    print(f"Acts device {device_idx}: {acts.device}")
-                    acts = acts.reshape(batch_size_seqs * data_cfg.seq_len, data_cfg.act_size)
-                    all_acts.append(acts)
-                    print(f"Running inference on device {device_idx}, iter {start}... {time.time() - start_time:.2f}")
-
-                return torch.cat(all_acts, dim=0)
-
-            seqs_list = []
+        # Use a ProcessPoolExecutor with a spawn context:
+        spawn_ctx = mp.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_devices,
+            mp_context=spawn_ctx
+        ) as executor:
+            futures = []
             for i in range(num_devices):
-                start_idx = i * chunk_size
-                # Last chunk takes the remainder in case total_seqs not divisible
-                end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
-                seqs_list.append(seqs[start_idx:end_idx])
-
-            print("Running inference...")
-            # Fire up threads
-            results = []
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                futures = []
-                for i in range(num_devices):
-                    print(f"Running inference on device {i}, {seqs_list[i].shape}...")
-                    futures.append(
-                        executor.submit(
-                            run_inference_on_device,
-                            i,  # device_idx
-                            seqs_list[i],
-                        )
-                    )
-                for f in futures:
-                    results.append(f.result())
+                futures.append(executor.submit(run_inference_on_device, i, seqs_list[i], data_cfg_dict))
+            results = [f.result() for f in futures]
 
         print("Combining partial results...")
-        # Combine partial results
-        # Each element of results is shape [chunk_size * seq_len, act_size] (except for possibly the last chunk)
-        # We will concat them into a single tensor
-        all_acts = torch.cat([acts.to("cpu") for acts in results], dim=0)
+        all_acts = torch.cat(results, dim=0)
 
-        # Now place combined acts in self.buffer
         acts_count = all_acts.shape[0]
         assert acts_count <= self.buffer.shape[0], "Buffer overflow"
         self.buffer[:acts_count] = all_acts
         self.pointer = acts_count
 
         # Shuffle
-        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0])]
+        idx = torch.randperm(acts_count)
+        self.buffer[:acts_count] = self.buffer[idx]
         self.pointer = 0
         print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
 
     @torch.no_grad()
     def next(self):
-        """
-        Fetch the next batch from the buffer. If pointer goes beyond half,
-        refresh the buffer so it never goes stale.
-        """
         out = self.buffer[self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens]
         self.pointer += data_cfg.buffer_batch_size_tokens
         if self.pointer > self.buffer.shape[0] // 2 - data_cfg.buffer_batch_size_tokens:

@@ -5,6 +5,7 @@ import concurrent.futures
 from mlsae.model import MultiLayerSAE
 from mlsae.utils import data_cfg, Buffer
 from dataclasses import dataclass, field
+import torch.multiprocessing as mp
 
 @dataclass
 class TrainConfig:
@@ -68,12 +69,12 @@ def train_step(entry, acts):
 
 def main():
     print("Starting training...")
-    wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
-    wandb.run.name = "multi_sae_single_buffer_topk"
+    # wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
+    # wandb.run.name = "multi_sae_single_buffer_topk"
 
-    wandb.config.update(train_cfg)
-    wandb.config.update(data_cfg)
-    print(wandb.config)
+    # wandb.config.update(train_cfg)
+    # wandb.config.update(data_cfg)
+    # print(wandb.config)
 
     print("Building buffer...")
     buffer = Buffer()
@@ -134,14 +135,15 @@ def main():
                     metrics = {
                         f"{arch_name}_k={k_val}_loss": loss_val,
                     }
-                    wandb.log(metrics)
+                    # wandb.log(metrics)
     finally:
         print("Saving all SAEs...")
         for entry in autoencoders:
             autoenc = entry["model"]
             arch_name = entry["name"]
             autoenc.save(arch_name)
-        wandb.finish()
+        # wandb.finish()
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()
