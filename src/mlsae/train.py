@@ -23,26 +23,25 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
             },
-            # {
-            #     "name": "1-0.1",
-            #     "encoder_dim_mults": [1],
-            #     "sparse_dim_mult": 16,
-            #     "decoder_dim_mults": [],
-            # },
-            # {
-            #     "name": "1-1",
-            #     "encoder_dim_mults": [1],
-            #     "sparse_dim_mult": 16,
-            #     "decoder_dim_mults": [1],
-            # },
+            {
+                "name": "1-0.1",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [],
+            },
+            {
+                "name": "1-1",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [1],
+            },
         ]
     )
     # Instead of multiple L1 coefficients, use multiple k values
-    # k_values: list = field(default_factory=lambda: [32, 128, 512])
-    k_values: list = field(default_factory=lambda: [32])
+    k_values: list = field(default_factory=lambda: [32, 128, 512])
 
     lr: float = 1e-4
-    num_tokens: int = int(2e8)
+    num_tokens: int = int(5e8)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
@@ -69,12 +68,14 @@ def train_step(entry, acts):
 
 def main():
     print("Starting training...")
-    # wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
-    # wandb.run.name = "multi_sae_single_buffer_topk"
+    for k, v in data_cfg.__dict__.items():
+        print(f"{k}: {v}")
+    wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
+    wandb.run.name = "multi_sae_single_buffer_topk"
 
-    # wandb.config.update(train_cfg)
-    # wandb.config.update(data_cfg)
-    # print(wandb.config)
+    wandb.config.update(train_cfg)
+    wandb.config.update(data_cfg)
+    print(wandb.config)
 
     print("Building buffer...")
     buffer = Buffer()
@@ -142,7 +143,7 @@ def main():
             autoenc = entry["model"]
             arch_name = entry["name"]
             autoenc.save(arch_name)
-        # wandb.finish()
+        wandb.finish()
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)

@@ -16,7 +16,7 @@ this_dir = Path(__file__).parent
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 8192
-    buffer_size_buffer_batch_size_mult: int = 256
+    buffer_size_buffer_batch_size_mult: int = 2048
     seq_len: int = 64
     model_batch_size_seqs: int = 128
     dataset_row_len: int = 1024
@@ -28,8 +28,7 @@ class DataConfig:
     act_size: int = 768
     device: str = "cuda:0"
     dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
-    test_data_ratio: float = 0.05
-    llm_device_count: int = 2
+    llm_device_count: int = 8
 
     @property
     def seqs_per_dataset_row(self) -> int:
@@ -54,8 +53,6 @@ class DataConfig:
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 data_cfg = DataConfig()
-for k, v in data_cfg.__dict__.items():
-    print(f"{k}: {v}")
 
 # Create directories
 this_dir = Path(__file__).parent
@@ -70,43 +67,52 @@ for dir_path in [cache_dir, data_dir, model_dir]:
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
-
-def run_inference_on_device(device_idx, seq_chunk, data_cfg_dict):
+def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: dict):
+    device = f"cuda:{device_id}"
     local_data_cfg = DataConfig(**data_cfg_dict)
+    
     DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-    local_dtype = DTYPES[local_data_cfg.enc_dtype]
-    device_str = f"cuda:{device_idx}"
 
-    # Each process loads its own model
+    local_dtype = DTYPES[local_data_cfg.enc_dtype]
+
     local_model = (
         transformer_lens.HookedTransformer
-        .from_pretrained(local_data_cfg.model_name, device=device_str)
+        .from_pretrained(local_data_cfg.model_name, device=device)
         .to(local_dtype)
     )
 
-    # BOS
-    seq_chunk[:, 0] = local_model.tokenizer.bos_token_id
+    try:
+        while True:
+            task = tasks.get()
+            if task is None:
+                break
+            seq_chunk = task
 
-    batch_size_seqs = local_data_cfg.model_batch_size_seqs
-    all_acts = []
-    seq_chunk = seq_chunk.to(device_str)
+            # BOS
+            seq_chunk[:, 0] = local_model.tokenizer.bos_token_id
 
-    with torch.autocast("cuda", local_dtype):
-        for start in range(0, seq_chunk.shape[0], batch_size_seqs):
-            start_time = time.time()
-            sub_chunk = seq_chunk[start : start + batch_size_seqs]
-            _, cache = local_model.run_with_cache(
-                sub_chunk,
-                stop_at_layer=local_data_cfg.layer + 1,
-                names_filter=local_data_cfg.act_name,
-                return_cache_object=True,
-            )
-            acts = cache.cache_dict[local_data_cfg.act_name]
-            acts = acts.reshape(acts.shape[0] * acts.shape[1], local_data_cfg.act_size)
-            all_acts.append(acts.cpu())
-            print(f"Inference time for {start}: {time.time() - start_time:.2f} seconds")
+            batch_size_seqs = local_data_cfg.model_batch_size_seqs
+            all_acts = []
+            seq_chunk = seq_chunk.to(device)
 
-    return torch.cat(all_acts, dim=0)
+            with torch.autocast("cuda", local_dtype):
+                for start in range(0, seq_chunk.shape[0], batch_size_seqs):
+                    sub_chunk = seq_chunk[start : start + batch_size_seqs]
+                    _, cache = local_model.run_with_cache(
+                        sub_chunk,
+                        stop_at_layer=local_data_cfg.layer + 1,
+                        names_filter=local_data_cfg.act_name,
+                        return_cache_object=True,
+                    )
+                    acts = cache.cache_dict[local_data_cfg.act_name]
+                    acts = acts.reshape(acts.shape[0] * acts.shape[1], local_data_cfg.act_size)
+                    all_acts.append(acts.cpu())
+
+            results.put(torch.cat(all_acts, dim=0).to("cpu"))
+
+    except Exception as e:
+        results.put(e)
+        raise
 
 def stream_training_chunks(data_cfg, cache_dir):
     dataset_iter = load_dataset(
@@ -126,12 +132,31 @@ class Buffer:
     Streams tokens and fills self.buffer with model activations.
     """
     def __init__(self):
+        print("Initializing buffer...")
         self.token_stream = stream_training_chunks(data_cfg, cache_dir)
         self.buffer = torch.zeros(
             (data_cfg.buffer_size_tokens, data_cfg.act_size),
             dtype=torch.float32,  # or DTYPES[data_cfg.enc_dtype], etc.
             device="cpu",
         )
+
+        self.tasks = mp.Queue()
+        self.results = mp.Queue()
+        self.workers = []
+
+        for i in range(data_cfg.llm_device_count):
+            p = mp.Process(
+                target=worker,
+                args=(
+                    self.tasks,
+                    self.results,
+                    i,
+                    data_cfg.__dict__,
+                ),
+            )
+            p.start()
+            self.workers.append(p)
+
         self.pointer = 0
         self.first = True
         self.refresh()
@@ -169,19 +194,17 @@ class Buffer:
             end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
             seqs_list.append(seqs[start_idx:end_idx])
 
-        print("Running inference (spawn processes)...")
-        data_cfg_dict = data_cfg.__dict__
+        print("Running inference...")
 
-        # Use a ProcessPoolExecutor with a spawn context:
-        spawn_ctx = mp.get_context("spawn")
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_devices,
-            mp_context=spawn_ctx
-        ) as executor:
-            futures = []
-            for i in range(num_devices):
-                futures.append(executor.submit(run_inference_on_device, i, seqs_list[i], data_cfg_dict))
-            results = [f.result() for f in futures]
+        for i in range(num_devices):
+            self.tasks.put(seqs_list[i])
+
+        results = []
+        for i in range(num_devices):
+            result = self.results.get()
+            if isinstance(result, Exception):
+                raise result
+            results.append(result)
 
         print("Combining partial results...")
         all_acts = torch.cat(results, dim=0)
@@ -204,3 +227,17 @@ class Buffer:
         if self.pointer > self.buffer.shape[0] // 2 - data_cfg.buffer_batch_size_tokens:
             self.refresh()
         return out
+
+    def __del__(self):
+        print("Cleaning up Buffer resources...")
+        # Send termination signal to all workers
+        for _ in self.workers:
+            self.tasks.put(None)  # None is the termination signal
+        
+        # Join all worker processes
+        for worker in self.workers:
+            worker.join()
+            
+        # Close the queues
+        self.tasks.close()
+        self.results.close()
