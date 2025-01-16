@@ -13,3 +13,5 @@ src/mlsae/cache/
 src/mlsae/data/
 src/mlsae/checkpoints/
 wandb/
+
+.DS_Store

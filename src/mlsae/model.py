@@ -236,3 +236,19 @@ class DeepSAE(nn.Module):
         new_model.to(new_model.dtype)
 
         return new_model
+
+    @torch.no_grad()
+    def resample_sparse_features(self, idx):
+        print("Resampling sparse features...")
+        new_W_enc = torch.zeros_like(self.encoder[-1].weight)
+        new_W_dec = torch.zeros_like(self.decoder[0].weight)
+        return_val = nn.init.kaiming_normal_(new_W_enc, nonlinearity="relu")
+        assert return_val is None
+        return_val = nn.init.kaiming_normal_(new_W_dec, nonlinearity="relu")
+        assert return_val is None
+
+        new_b_enc = torch.zeros_like(self.encoder[-1].bias)
+
+        self.encoder[-1].weight.data[:, idx] = new_W_enc[:, idx]
+        self.encoder[-1].bias.data[idx] = new_b_enc[idx]
+        self.decoder[0].weight.data[idx, :] = new_W_dec[idx, :]
