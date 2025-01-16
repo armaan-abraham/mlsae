@@ -15,10 +15,10 @@ this_dir = Path(__file__).parent
 @dataclass
 class DataConfig:
     seed: int = 49
-    buffer_batch_size_tokens: int = 32768
+    buffer_batch_size_tokens: int = 65536
     buffer_size_buffer_batch_size_mult: int = 512
     seq_len: int = 64
-    model_batch_size_seqs: int = 256
+    model_batch_size_seqs: int = 512
     dataset_row_len: int = 1024
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
@@ -28,7 +28,7 @@ class DataConfig:
     act_size: int = 768
     device: str = "cuda:0"
     dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
-    llm_device_count: int = 8
+    llm_device_count: int = 4
 
     eval_data_seed: int = 59
     eval_tokens_buffer_batch_size_mult: int = 512

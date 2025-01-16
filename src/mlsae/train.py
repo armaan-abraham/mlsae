@@ -14,26 +14,39 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "0-0",
+                "name": "0-0_wd=1e-4",
                 "encoder_dim_mults": [],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
+                "l1_val": 12,
+                "weight_decay": 1e-4,
             },
             {
-                "name": "1-0",
+                "name": "1-0_wd=1e-4",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
+                "l1_val": 12,
+                "weight_decay": 1e-4,
             },
             {
-                "name": "1-1",
+                "name": "1-0_wd=3e-4",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [],
+                "l1_val": 12,
+                "weight_decay": 3e-4,
+            },
+            {
+                "name": "1-1_wd=1e-4",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
+                "l1_val": 12,
+                "weight_decay": 1e-4,
             },
         ]
     )
-    l1_values: list = field(default_factory=lambda: [12, 24])
 
     lr: float = 1e-4
     num_tokens: int = int(1e9)
@@ -41,10 +54,9 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    weight_decay: float = 1e-4
 
-    resample_dead_every_n_batches: int = 3000
-    measure_freq_over_n_batches: int = 12
+    resample_dead_every_n_batches: int = 1500
+    measure_freq_over_n_batches: int = 6
 
     log_every_n_batches: int = 10
 
@@ -147,36 +159,35 @@ def main():
     autoencoders = []
     idx = 0
 
-    # Loop over different architectures and L1 coefficients
+    # Loop over architectures that now include l1_val and weight_decay
     for arch_dict in train_cfg.architectures:
-        for l1_val in train_cfg.l1_values:
-            device_id = idx % n_gpus
-            device_str = f"cuda:{device_id}"
-            idx += 1
+        device_id = idx % n_gpus
+        device_str = f"cuda:{device_id}"
+        idx += 1
 
-            autoenc = DeepSAE(
-                encoder_dim_mults=arch_dict["encoder_dim_mults"],
-                sparse_dim_mult=arch_dict["sparse_dim_mult"],
-                decoder_dim_mults=arch_dict["decoder_dim_mults"],
-                act_size=data_cfg.act_size,
-                enc_dtype=data_cfg.enc_dtype,
-                device=device_str,
-                l1_coeff=l1_val,  # L1 sparsity penalty
-            )
-            optimizer = torch.optim.Adam(
-                autoenc.get_param_groups(weight_decay=train_cfg.weight_decay),
-                lr=train_cfg.lr,
-                betas=(train_cfg.beta1, train_cfg.beta2),
-            )
-            autoencoders.append(
-                {
-                    "model": autoenc,
-                    "optimizer": optimizer,
-                    "device": device_str,
-                    "name": arch_dict["name"],
-                    "l1_coeff": l1_val,
-                }
-            )
+        autoenc = DeepSAE(
+            encoder_dim_mults=arch_dict["encoder_dim_mults"],
+            sparse_dim_mult=arch_dict["sparse_dim_mult"],
+            decoder_dim_mults=arch_dict["decoder_dim_mults"],
+            act_size=data_cfg.act_size,
+            enc_dtype=data_cfg.enc_dtype,
+            device=device_str,
+            l1_coeff=arch_dict["l1_val"],
+        )
+        optimizer = torch.optim.Adam(
+            autoenc.get_param_groups(weight_decay=arch_dict["weight_decay"]),
+            lr=train_cfg.lr,
+            betas=(train_cfg.beta1, train_cfg.beta2),
+        )
+        autoencoders.append(
+            {
+                "model": autoenc,
+                "optimizer": optimizer,
+                "device": device_str,
+                "name": arch_dict["name"],
+                "l1_coeff": arch_dict["l1_val"],
+            }
+        )
 
     total_steps = train_cfg.num_tokens // data_cfg.buffer_batch_size_tokens
     print("Training all SAEs...")
@@ -200,18 +211,10 @@ def main():
                 # Log periodically
                 if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
                     metrics = {
-                        f"{result['arch_name']}_l1={result['l1_val']}_loss": result[
-                            "loss"
-                        ],
-                        f"{result['arch_name']}_l1={result['l1_val']}_mse": result[
-                            "mse_loss"
-                        ],
-                        f"{result['arch_name']}_l1={result['l1_val']}_l1_loss": result[
-                            "l1_loss"
-                        ],
-                        f"{result['arch_name']}_l1={result['l1_val']}_nonzero_acts": result[
-                            "nonzero_acts"
-                        ],
+                        f"{result['arch_name']}_l1={result['l1_val']}_loss": result["loss"],
+                        f"{result['arch_name']}_l1={result['l1_val']}_mse": result["mse_loss"],
+                        f"{result['arch_name']}_l1={result['l1_val']}_l1_loss": result["l1_loss"],
+                        f"{result['arch_name']}_l1={result['l1_val']}_nonzero_acts": result["nonzero_acts"],
                     }
                     wandb.log(metrics)
 
