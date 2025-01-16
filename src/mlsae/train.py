@@ -33,15 +33,15 @@ class TrainConfig:
             },
         ]
     )
-    # Replace old k_values with multiple L1 coefficients to try
-    l1_values: list = field(default_factory=lambda: [1e-6, 2e-6, 4e-6, 2e-7, 4e-7])
+    l1_values: list = field(default_factory=lambda: [1, 24])
 
     lr: float = 1e-4
-    num_tokens: int = int(5e8)
+    num_tokens: int = int(1e9)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
+    weight_decay: float = 5e-3
 
 
 train_cfg = TrainConfig()
@@ -105,10 +105,10 @@ def main():
                 act_size=data_cfg.act_size,
                 enc_dtype=data_cfg.enc_dtype,
                 device=device_str,
-                l1_coeff=l1_val,  # pass the L1 coefficient
+                l1_coeff=l1_val,  # L1 sparsity penalty
             )
             optimizer = torch.optim.Adam(
-                autoenc.parameters(),
+                autoenc.get_param_groups(weight_decay=train_cfg.weight_decay),
                 lr=train_cfg.lr,
                 betas=(train_cfg.beta1, train_cfg.beta2),
             )
@@ -141,7 +141,7 @@ def main():
                 )
 
                 # Log periodically
-                if (step_idx + 1) % 50 == 0:
+                if (step_idx + 1) % 25 == 0:
                     metrics = {
                         f"{arch_name}_l1={l1_val}_loss": loss_val,
                         f"{arch_name}_l1={l1_val}_mse": mse_val,

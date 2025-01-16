@@ -28,7 +28,7 @@ class DataConfig:
     act_size: int = 768
     device: str = "cuda:0"
     dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
-    llm_device_count: int = 1
+    llm_device_count: int = 8
 
     eval_data_seed: int = 59
     eval_tokens_buffer_batch_size_mult: int = 512
@@ -162,7 +162,7 @@ class Buffer:
         )
         self.buffer = torch.zeros(
             (data_cfg.buffer_size_tokens, data_cfg.act_size),
-            dtype=torch.float32,  # or DTYPES[data_cfg.enc_dtype], etc.
+            dtype=DTYPES[data_cfg.enc_dtype],
             device="cpu",
         )
 

@@ -14,6 +14,8 @@ class DeepSAE(nn.Module):
     """
     Multi-layer sparse autoencoder with a single sparse representation layer,
     using ReLU + an L1 sparsity penalty on the hidden layer.
+    Now includes optional LayerNorm for intermediate encoder/decoder blocks,
+    and parameter-group assignment during layer creation.
     """
 
     def __init__(
@@ -28,6 +30,7 @@ class DeepSAE(nn.Module):
     ):
         super().__init__()
 
+        # Model hyperparameters
         self.encoder_dims = [dim * act_size for dim in encoder_dim_mults]
         self.decoder_dims = [dim * act_size for dim in decoder_dim_mults]
         self.sparse_dim = sparse_dim_mult * act_size
@@ -44,33 +47,95 @@ class DeepSAE(nn.Module):
         print(f"Device: {self.device}")
         print(f"Dtype: {self.dtype}")
 
+        # --------------------------------------------------------
+        # Parameter groups for L2: stored in class-level lists
+        # --------------------------------------------------------
+        self.params_with_decay = []
+        self.params_no_decay = []
+
+        # --------------------------------------------------------
         # Build encoder
-        layers = []
+        # --------------------------------------------------------
+        encoder_layers = []
         in_dim = self.act_size
+
+        # Helper: build the repeated (Linear -> ReLU -> LayerNorm) blocks
         for dim in self.encoder_dims:
-            layers.append(nn.Linear(in_dim, dim))
-            layers.append(nn.ReLU())
+            # For these hidden layers, we want L2 on the weights
+            linear_layer = self._create_linear_layer(
+                in_dim, dim, apply_weight_decay=True
+            )
+            encoder_layers.append(linear_layer)
+            encoder_layers.append(nn.ReLU())
+            encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 
-        # Sparse representation
-        layers.append(nn.Linear(in_dim, self.sparse_dim))
-        # We'll apply ReLU in forward()
+        # Final encoder layer is the sparse representation => NO weight decay
+        linear_sparse = self._create_linear_layer(
+            in_dim, self.sparse_dim, apply_weight_decay=False
+        )
+        encoder_layers.append(linear_sparse)
 
-        self.encoder = nn.Sequential(*layers)
+        self.encoder = nn.Sequential(*encoder_layers)
 
+        # --------------------------------------------------------
         # Build decoder
-        dec_layers = []
+        # --------------------------------------------------------
+        decoder_layers = []
         out_dim = self.sparse_dim
+
         for dim in self.decoder_dims:
-            dec_layers.append(nn.Linear(out_dim, dim))
-            dec_layers.append(nn.ReLU())
+            # Decoder hidden blocks also get L2 on weights
+            linear_layer = self._create_linear_layer(
+                out_dim, dim, apply_weight_decay=True
+            )
+            decoder_layers.append(linear_layer)
+            decoder_layers.append(nn.ReLU())
+            decoder_layers.append(nn.LayerNorm(dim))
             out_dim = dim
 
-        dec_layers.append(nn.Linear(out_dim, self.act_size))
-        self.decoder = nn.Sequential(*dec_layers)
+        # Final decoder layer -> output => this also gets L2 (common default)
+        linear_out = self._create_linear_layer(
+            out_dim, self.act_size, apply_weight_decay=True
+        )
+        decoder_layers.append(linear_out)
 
+        self.decoder = nn.Sequential(*decoder_layers)
+
+        # Initialize weights, move to device/dtype
         self.init_weights()
         self.to(self.device, self.dtype)
+
+    def _create_linear_layer(self, in_dim, out_dim, apply_weight_decay: bool):
+        """
+        Creates a Linear(in_dim, out_dim) and assigns the weight to
+        params_with_decay or params_no_decay accordingly. The bias
+        is always placed in params_no_decay (commonly done in PyTorch).
+        """
+        layer = nn.Linear(in_dim, out_dim)
+
+        # Decide weight decay
+        if apply_weight_decay:
+            self.params_with_decay.append(layer.weight)
+        else:
+            self.params_no_decay.append(layer.weight)
+
+        # Bias typically doesn't get L2 regularization
+        if layer.bias is not None:
+            self.params_no_decay.append(layer.bias)
+
+        return layer
+
+    def get_param_groups(self, weight_decay=1e-4):
+        """
+        Return parameter groups for the optimizer:
+          - One group with weight_decay
+          - One group without weight_decay
+        """
+        return [
+            {"params": self.params_with_decay, "weight_decay": weight_decay},
+            {"params": self.params_no_decay, "weight_decay": 0.0},
+        ]
 
     def init_weights(self):
         for layer in self.encoder:
@@ -86,6 +151,7 @@ class DeepSAE(nn.Module):
     def forward(self, x):
         # Encode
         encoded = self.encoder(x)
+        # The final encoder layer is linear only, so let's apply ReLU here if needed
         feature_acts = F.relu(encoded)
 
         # Decode
@@ -95,11 +161,10 @@ class DeepSAE(nn.Module):
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
 
         # Add L1 penalty on the sparse hidden activation
-        l1_loss = feature_acts.abs().mean()
-        loss = mse_loss + self.l1_coeff * l1_loss
+        l1_loss = feature_acts.abs().mean() * self.l1_coeff
+        loss = mse_loss + l1_loss
 
-        # Calculate number of nonzero activations (>1e-6)
-        assert feature_acts.shape[0] == x.shape[0], "Batch size mismatch"
+        # Calculate number of nonzero activations in the sparse layer
         nonzero_acts = (feature_acts > 1e-6).float().sum(dim=1).mean()
 
         return loss, mse_loss, l1_loss, nonzero_acts, feature_acts
