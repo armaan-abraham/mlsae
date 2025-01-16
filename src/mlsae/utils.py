@@ -5,7 +5,6 @@ from pathlib import Path
 
 import einops
 import torch
-import torch.multiprocessing as mp
 import transformer_lens
 from datasets import load_dataset
 
@@ -26,9 +25,10 @@ class DataConfig:
     site: str = "resid_pre"
     layer: int = 6
     act_size: int = 768
+
     device: str = "cuda:0"
+
     dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
-    llm_device_count: int = 8
 
     eval_data_seed: int = 59
     eval_tokens_buffer_batch_size_mult: int = 512
@@ -80,54 +80,6 @@ os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
 
-def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: dict):
-    device = f"cuda:{device_id}"
-    local_data_cfg = DataConfig(**data_cfg_dict)
-
-    DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-
-    local_dtype = DTYPES[local_data_cfg.enc_dtype]
-
-    local_model = transformer_lens.HookedTransformer.from_pretrained(
-        local_data_cfg.model_name, device=device
-    ).to(local_dtype)
-
-    try:
-        while True:
-            task = tasks.get()
-            if task is None:
-                break
-            seq_chunk = task
-
-            # BOS
-            seq_chunk[:, 0] = local_model.tokenizer.bos_token_id
-
-            batch_size_seqs = local_data_cfg.model_batch_size_seqs
-            all_acts = []
-            seq_chunk = seq_chunk.to(device)
-
-            with torch.autocast("cuda", local_dtype):
-                for start in range(0, seq_chunk.shape[0], batch_size_seqs):
-                    sub_chunk = seq_chunk[start : start + batch_size_seqs]
-                    _, cache = local_model.run_with_cache(
-                        sub_chunk,
-                        stop_at_layer=local_data_cfg.layer + 1,
-                        names_filter=local_data_cfg.act_name,
-                        return_cache_object=True,
-                    )
-                    acts = cache.cache_dict[local_data_cfg.act_name]
-                    acts = acts.reshape(
-                        acts.shape[0] * acts.shape[1], local_data_cfg.act_size
-                    )
-                    all_acts.append(acts.cpu())
-
-            results.put(torch.cat(all_acts, dim=0).to("cpu"))
-
-    except Exception as e:
-        results.put(e)
-        raise
-
-
 def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = False):
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
@@ -148,12 +100,11 @@ def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = F
 
 class Buffer:
     """
-    Streams tokens and fills self.buffer with model activations.
+    Streams tokens and fills self.buffer with model activations (single-threaded).
     """
 
-    def __init__(self, eval: bool = False, use_multiprocessing: bool = True):
+    def __init__(self, eval: bool = False):
         print("Initializing buffer...")
-        self.use_multiprocessing = use_multiprocessing
         self.token_stream = stream_training_chunks(
             data_cfg,
             cache_dir,
@@ -166,33 +117,12 @@ class Buffer:
             device="cpu",
         )
 
-        # Only set up multiprocessing if requested
-        if self.use_multiprocessing:
-            mp.set_start_method("spawn", force=True)
-            self.tasks = mp.Queue()
-            self.results = mp.Queue()
-            self.workers = []
-
-            # Spin up child processes that each hold a model
-            for i in range(data_cfg.llm_device_count):
-                p = mp.Process(
-                    target=worker,
-                    args=(
-                        self.tasks,
-                        self.results,
-                        i,
-                        data_cfg.__dict__,
-                    ),
-                )
-                p.start()
-                self.workers.append(p)
-        else:
-            # If multiprocessing is off, load a local model in the main process
-            device = data_cfg.device
-            local_dtype = DTYPES[data_cfg.enc_dtype]
-            self.local_model = transformer_lens.HookedTransformer.from_pretrained(
-                data_cfg.model_name, device=device
-            ).to(local_dtype)
+        # Load a local model in the main process
+        device = data_cfg.device
+        local_dtype = DTYPES[data_cfg.enc_dtype]
+        self.local_model = transformer_lens.HookedTransformer.from_pretrained(
+            data_cfg.model_name, device=device
+        ).to(local_dtype)
 
         self.pointer = 0
         self.first = True
@@ -221,11 +151,8 @@ class Buffer:
             seq=data_cfg.seqs_per_dataset_row,
         )
 
-        # Run inference, either in multiprocessing mode or single-process mode
-        if self.use_multiprocessing:
-            all_acts = self.run_inference_multi(seqs)
-        else:
-            all_acts = self.run_inference_mono(seqs)
+        # Run inference in single-process mode
+        all_acts = self.run_inference(seqs)
 
         acts_count = all_acts.shape[0]
         assert acts_count <= self.buffer.shape[0], "Buffer overflow"
@@ -240,43 +167,8 @@ class Buffer:
         print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
 
     @torch.no_grad()
-    def run_inference_multi(self, seqs: torch.Tensor) -> torch.Tensor:
-        """
-        Run inference using multiple processes (one per device).
-        """
-        total_seqs = seqs.shape[0]
-        num_devices = data_cfg.llm_device_count
-        chunk_size = total_seqs // num_devices
-        seqs_list = []
-
-        for i in range(num_devices):
-            start_idx = i * chunk_size
-            end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
-            seqs_list.append(seqs[start_idx:end_idx])
-
-        print("Running inference with multiprocessing...")
-
-        # Submit tasks to MP workers
-        for i in range(num_devices):
-            self.tasks.put(seqs_list[i])
-
-        # Collect results
-        results = []
-        for _ in range(num_devices):
-            result = self.results.get()
-            if isinstance(result, Exception):
-                raise result
-            results.append(result)
-
-        print("Combining partial results...")
-        return torch.cat(results, dim=0)
-
-    @torch.no_grad()
-    def run_inference_mono(self, seqs: torch.Tensor) -> torch.Tensor:
-        """
-        Run inference in single-process mode with a local model on one device.
-        """
-        print("Running inference in single process...")
+    def run_inference(self, seqs: torch.Tensor) -> torch.Tensor:
+        print("Running inference...")
         # BOS
         seqs[:, 0] = self.local_model.tokenizer.bos_token_id
 
@@ -309,20 +201,3 @@ class Buffer:
         if self.pointer > self.buffer.shape[0] // 2 - data_cfg.buffer_batch_size_tokens:
             self.refresh()
         return out
-
-    def __del__(self):
-        print("Cleaning up Buffer resources...")
-
-        # If using multiprocessing, terminate all processes cleanly
-        if self.use_multiprocessing:
-            # Send termination signal to all workers
-            for _ in self.workers:
-                self.tasks.put(None)  # None is the termination signal
-
-            # Join all worker processes
-            for worker in self.workers:
-                worker.join()
-
-            # Close the queues
-            self.tasks.close()
-            self.results.close()

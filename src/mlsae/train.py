@@ -33,8 +33,6 @@ class TrainConfig:
 
     log_every_n_batches: int = 10
 
-    device: str = "cuda:0"
-
 
 train_cfg = TrainConfig()
 
@@ -84,7 +82,7 @@ def main():
         decoder_dim_mults=train_cfg.architecture["decoder_dim_mults"],
         act_size=data_cfg.act_size,
         enc_dtype=data_cfg.enc_dtype,
-        device=train_cfg.device,
+        device=data_cfg.device,
         l1_coeff=train_cfg.l1_coeff,
     )
 
@@ -99,7 +97,7 @@ def main():
 
     try:
         for step_idx in tqdm.trange(total_steps, desc="Training"):
-            acts = buffer.next().to(train_cfg.device)
+            acts = buffer.next().to(data_cfg.device)
             loss, mse_loss, l1_loss, nonzero_acts, feature_acts = autoenc(acts)
 
             loss.backward()
