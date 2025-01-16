@@ -6,14 +6,15 @@ import tqdm
 import wandb
 from mlsae.model import ZERO_ACT_THRESHOLD, DeepSAE
 from mlsae.data import Buffer, data_cfg
+import petname
 
 
 @dataclass
 class TrainConfig:
     architecture: dict = field(
         default_factory=lambda: {
-            "name": "0-0",
-            "encoder_dim_mults": [],
+            "name": "1-0",
+            "encoder_dim_mults": [1],
             "sparse_dim_mult": 16,
             "decoder_dim_mults": [],
         }
@@ -66,7 +67,8 @@ def main():
     for k, v in data_cfg.__dict__.items():
         print(f"{k}: {v}")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
-    wandb.run.name = "single_sae_single_buffer_l1"
+    base_name = f"{train_cfg.architecture['name']}_l1={train_cfg.l1_coeff}"
+    wandb.run.name = f"{base_name}-{petname.generate()}"
 
     wandb.config.update(train_cfg)
     wandb.config.update(data_cfg)

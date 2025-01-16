@@ -17,7 +17,7 @@ this_dir = Path(__file__).parent
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 32768
-    buffer_size_buffer_batch_size_mult: int = 512
+    buffer_size_buffer_batch_size_mult: int = 128
     seq_len: int = 64
     model_batch_size_seqs: int = 256
     dataset_row_len: int = 1024
@@ -28,7 +28,7 @@ class DataConfig:
     layer: int = 6
     act_size: int = 768
 
-    device: str = "cuda:0"
+    device: str = "cuda:1"
     dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
 
     eval_data_seed: int = 59
@@ -88,6 +88,7 @@ data_cfg = DataConfig()
 # Create directories
 this_dir = Path(__file__).parent
 cache_dir = this_dir / "cache"
+activations_dir = cache_dir
 data_dir = this_dir / "data"
 model_dir = this_dir / "checkpoints"
 
@@ -196,12 +197,12 @@ class Buffer:
         # Handle caching directory (either find existing or create new)
         self.cache_path = None
         if data_cfg.caching:
-            existing_cache = find_existing_cache_folder(data_cfg, cache_dir)
+            existing_cache = find_existing_cache_folder(data_cfg, activations_dir)
             if existing_cache is not None:
                 print(f"Found existing cache: {existing_cache}")
                 self.cache_path = existing_cache
             else:
-                self.cache_path = create_new_cache_folder(data_cfg, cache_dir)
+                self.cache_path = create_new_cache_folder(data_cfg, activations_dir)
                 print(f"Created new cache folder: {self.cache_path}")
 
         self.refresh()
