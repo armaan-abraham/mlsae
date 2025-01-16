@@ -41,12 +41,12 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    weight_decay: float = 5e-3
+    weight_decay: float = 1e-4
 
-    resample_dead_every_n_batches: int = 2500
-    measure_freq_over_n_batches: int = 25
+    resample_dead_every_n_batches: int = 3000
+    measure_freq_over_n_batches: int = 12
 
-    log_every_n_batches: int = 25
+    log_every_n_batches: int = 10
 
 
 train_cfg = TrainConfig()

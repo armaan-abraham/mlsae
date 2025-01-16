@@ -48,9 +48,7 @@ class DeepSAE(nn.Module):
         print(f"Device: {self.device}")
         print(f"Dtype: {self.dtype}")
 
-        # --------------------------------------------------------
         # Parameter groups for L2: stored in class-level lists
-        # --------------------------------------------------------
         self.params_with_decay = []
         self.params_no_decay = []
 
@@ -67,10 +65,9 @@ class DeepSAE(nn.Module):
             )
             encoder_layers.append(linear_layer)
             encoder_layers.append(nn.ReLU())
-            encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 
-        # Final encoder layer creates sparse representation => NO weight decay
+        # Final encoder layer creates sparse representation
         linear_sparse = self._create_linear_layer(
             in_dim, self.sparse_dim, apply_weight_decay=False
         )
@@ -85,18 +82,16 @@ class DeepSAE(nn.Module):
         out_dim = self.sparse_dim
 
         for dim in self.decoder_dims:
-            # Decoder hidden blocks also get L2 on weights
             linear_layer = self._create_linear_layer(
                 out_dim, dim, apply_weight_decay=True
             )
             decoder_layers.append(linear_layer)
             decoder_layers.append(nn.ReLU())
-            decoder_layers.append(nn.LayerNorm(dim))
             out_dim = dim
 
-        # Final decoder layer -> output => this also gets L2
+        # Final decoder layer -> output
         linear_out = self._create_linear_layer(
-            out_dim, self.act_size, apply_weight_decay=True
+            out_dim, self.act_size, apply_weight_decay=False
         )
         decoder_layers.append(linear_out)
 
@@ -114,13 +109,11 @@ class DeepSAE(nn.Module):
         """
         layer = nn.Linear(in_dim, out_dim)
 
-        # Decide weight decay
         if apply_weight_decay:
             self.params_with_decay.append(layer.weight)
         else:
             self.params_no_decay.append(layer.weight)
 
-        # Bias typically doesn't get L2 regularization
         if layer.bias is not None:
             self.params_no_decay.append(layer.bias)
 

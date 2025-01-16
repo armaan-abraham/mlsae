@@ -15,10 +15,10 @@ this_dir = Path(__file__).parent
 @dataclass
 class DataConfig:
     seed: int = 49
-    buffer_batch_size_tokens: int = 16384
-    buffer_size_buffer_batch_size_mult: int = 1024
+    buffer_batch_size_tokens: int = 32768
+    buffer_size_buffer_batch_size_mult: int = 512
     seq_len: int = 64
-    model_batch_size_seqs: int = 128
+    model_batch_size_seqs: int = 256
     dataset_row_len: int = 1024
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
