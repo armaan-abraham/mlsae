@@ -11,6 +11,7 @@ model_dir = Path(__file__).parent / "checkpoints"
 
 ZERO_ACT_THRESHOLD = 1e-6
 
+
 class DeepSAE(nn.Module):
     """
     Multi-layer sparse autoencoder with a single sparse representation layer,
