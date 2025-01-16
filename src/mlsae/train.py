@@ -5,7 +5,7 @@ import tqdm
 
 import wandb
 from mlsae.model import ZERO_ACT_THRESHOLD, DeepSAE
-from mlsae.utils import Buffer, data_cfg
+from mlsae.data import Buffer, data_cfg
 
 
 @dataclass

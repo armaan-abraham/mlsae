@@ -9,14 +9,14 @@ import torch
 import tqdm
 
 import mlsae.model
-import mlsae.utils
+import mlsae.data
 
 importlib.reload(mlsae.model)
-importlib.reload(mlsae.utils)
+importlib.reload(mlsae.data)
 from pathlib import Path
 
 from mlsae.model import DeepSAE
-from mlsae.utils import Buffer, data_cfg
+from mlsae.data import Buffer, data_cfg
 
 # Load gpt2 model
 
