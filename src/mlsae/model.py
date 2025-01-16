@@ -9,6 +9,7 @@ from mlsae.utils import DTYPES
 
 model_dir = Path(__file__).parent / "checkpoints"
 
+ZERO_ACT_THRESHOLD = 1e-6
 
 class DeepSAE(nn.Module):
     """
@@ -59,9 +60,8 @@ class DeepSAE(nn.Module):
         encoder_layers = []
         in_dim = self.act_size
 
-        # Helper: build the repeated (Linear -> ReLU -> LayerNorm) blocks
+        # Bulid the repeated (Linear -> ReLU -> LayerNorm) blocks
         for dim in self.encoder_dims:
-            # For these hidden layers, we want L2 on the weights
             linear_layer = self._create_linear_layer(
                 in_dim, dim, apply_weight_decay=True
             )
@@ -70,7 +70,7 @@ class DeepSAE(nn.Module):
             encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 
-        # Final encoder layer is the sparse representation => NO weight decay
+        # Final encoder layer creates sparse representation => NO weight decay
         linear_sparse = self._create_linear_layer(
             in_dim, self.sparse_dim, apply_weight_decay=False
         )
@@ -94,7 +94,7 @@ class DeepSAE(nn.Module):
             decoder_layers.append(nn.LayerNorm(dim))
             out_dim = dim
 
-        # Final decoder layer -> output => this also gets L2 (common default)
+        # Final decoder layer -> output => this also gets L2
         linear_out = self._create_linear_layer(
             out_dim, self.act_size, apply_weight_decay=True
         )
@@ -165,7 +165,7 @@ class DeepSAE(nn.Module):
         loss = mse_loss + l1_loss
 
         # Calculate number of nonzero activations in the sparse layer
-        nonzero_acts = (feature_acts > 1e-6).float().sum(dim=1).mean()
+        nonzero_acts = (feature_acts > ZERO_ACT_THRESHOLD).float().sum(dim=1).mean()
 
         return loss, mse_loss, l1_loss, nonzero_acts, feature_acts
 

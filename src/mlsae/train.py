@@ -5,7 +5,7 @@ import torch
 import tqdm
 import wandb
 
-from mlsae.model import DeepSAE
+from mlsae.model import DeepSAE, ZERO_ACT_THRESHOLD
 from mlsae.utils import Buffer, data_cfg
 
 
@@ -33,7 +33,7 @@ class TrainConfig:
             },
         ]
     )
-    l1_values: list = field(default_factory=lambda: [1, 24])
+    l1_values: list = field(default_factory=lambda: [12, 24])
 
     lr: float = 1e-4
     num_tokens: int = int(1e9)
@@ -76,15 +76,15 @@ def model_step(entry, acts, is_train=True):
         with torch.no_grad():
             loss, mse_loss, l1_loss, nonzero_acts, feature_acts = autoenc(acts_local)
 
-    return (
-        loss.item(),
-        mse_loss.item(),
-        l1_loss.item(),
-        nonzero_acts.item(),
-        arch_name,
-        l1_val,
-        feature_acts.detach(),  # Might be useful outside this function
-    )
+    return {
+        "loss": loss.item(),
+        "mse_loss": mse_loss.item(),
+        "l1_loss": l1_loss.item(),
+        "nonzero_acts": nonzero_acts.item(),
+        "arch_name": arch_name,
+        "l1_val": l1_val,
+        "feature_acts": feature_acts.detach(),
+    }
 
 
 def measure_and_resample_dead_features(
@@ -114,8 +114,8 @@ def measure_and_resample_dead_features(
 
         # Aggregate activation counts
         for i, f in enumerate(futures):
-            _, _, _, _, _, _, feature_acts = f.result()
-            active_mask = feature_acts > 1e-6
+            result = f.result()
+            active_mask = result["feature_acts"] > ZERO_ACT_THRESHOLD
             activation_counts_list[i] += active_mask.sum(dim=0).long()
 
     # Resample any feature that never activated
@@ -195,17 +195,23 @@ def main():
 
             # Aggregate results and log
             for f in futures:
-                loss_val, mse_val, l1_val_loss, nonzero_acts, arch_name, l1_val, _ = (
-                    f.result()
-                )
+                result = f.result()
 
                 # Log periodically
                 if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
                     metrics = {
-                        f"{arch_name}_l1={l1_val}_loss": loss_val,
-                        f"{arch_name}_l1={l1_val}_mse": mse_val,
-                        f"{arch_name}_l1={l1_val}_l1_loss": l1_val_loss,
-                        f"{arch_name}_l1={l1_val}_nonzero_acts": nonzero_acts,
+                        f"{result['arch_name']}_l1={result['l1_val']}_loss": result[
+                            "loss"
+                        ],
+                        f"{result['arch_name']}_l1={result['l1_val']}_mse": result[
+                            "mse_loss"
+                        ],
+                        f"{result['arch_name']}_l1={result['l1_val']}_l1_loss": result[
+                            "l1_loss"
+                        ],
+                        f"{result['arch_name']}_l1={result['l1_val']}_nonzero_acts": result[
+                            "nonzero_acts"
+                        ],
                     }
                     wandb.log(metrics)
 
