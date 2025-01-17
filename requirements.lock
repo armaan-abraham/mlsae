@@ -311,3 +311,5 @@ xxhash==3.5.0
     # via datasets
 yarl==1.18.3
     # via aiohttp
+zstandard==0.23.0
+    # via mlsae

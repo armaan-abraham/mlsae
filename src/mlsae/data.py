@@ -11,7 +11,6 @@ import torch.multiprocessing as mp
 import transformer_lens
 from datasets import load_dataset
 
-# Add a tokenizer import for the fallback path
 from transformers import AutoTokenizer
 
 this_dir = Path(__file__).parent
@@ -27,14 +26,14 @@ class DataConfig:
     dataset_row_len: int = 1024
     enc_dtype: str = "fp32"
     save_dtype: str = "bf16"
-    model_name: str = "pythia-31m"
+    model_name: str = "pythia-14m"
     site: str = "resid_pre"
-    layer: int = 6
-    act_size: int = 768
+    layer: int = 3
+    act_size: int = 128
     device: str = "cuda:0"
-    dataset_name: str = "EleutherAI/pile"
-    data_is_tokenized: bool = False  # New field
-    llm_device_count: int = 4
+    dataset_name: str = "Bingsu/openwebtext_20p"
+    data_is_tokenized: bool = False
+    llm_device_count: int = 2
 
     eval_data_seed: int = 59
     eval_tokens_buffer_batch_size_mult: int = 512
@@ -194,6 +193,7 @@ def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = F
         split="train",
         streaming=True,
         cache_dir=cache_dir,
+        trust_remote_code=True,
     )
     dataset_iter = dataset_iter.shuffle(
         buffer_size=buffer_size,
@@ -204,7 +204,8 @@ def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = F
     # Instantiate a tokenizer if needed
     tokenizer = None
     if not data_cfg.data_is_tokenized:
-        tokenizer = AutoTokenizer.from_pretrained(data_cfg.model_name)
+        tokenizer = AutoTokenizer.from_pretrained("EleutherAI/pythia-14m")
+    tokenizer.pad_token = tokenizer.eos_token
 
     for row_batch in row_batch_iter:
         if data_cfg.data_is_tokenized:

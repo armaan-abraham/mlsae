@@ -14,36 +14,20 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "0-0_wd=1e-4",
+                "name": "0-0",
                 "encoder_dim_mults": [],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [],
-                "l1_val": 12,
-                "weight_decay": 1e-4,
-            },
-            {
-                "name": "1-0_wd=1e-4",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [],
-                "l1_val": 12,
-                "weight_decay": 1e-4,
-            },
-            {
-                "name": "1-0_wd=6e-4",
-                "encoder_dim_mults": [1],
                 "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
                 "l1_val": 12,
                 "weight_decay": 6e-4,
             },
             {
-                "name": "1-1_wd=1e-4",
+                "name": "1-0",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 8,
-                "decoder_dim_mults": [1],
+                "decoder_dim_mults": [],
                 "l1_val": 12,
-                "weight_decay": 1e-4,
+                "weight_decay": 6e-4,
             },
         ]
     )
