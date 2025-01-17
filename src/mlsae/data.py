@@ -1,7 +1,9 @@
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
+import json
+import uuid
 
 import einops
 import torch
@@ -18,20 +20,34 @@ class DataConfig:
     buffer_batch_size_tokens: int = 65536
     buffer_size_buffer_batch_size_mult: int = 512
     seq_len: int = 64
-    model_batch_size_seqs: int = 512
-    dataset_row_len: int = 1024
+    model_batch_size_seqs: int = 1024
+    dataset_row_len: int = 512
     enc_dtype: str = "fp32"
+    cache_dtype: str = "bf16"
     remove_rare_dir: bool = False
-    model_name: str = "gpt2-small"
+    model_name: str = "tiny-stories-3M"
     site: str = "resid_pre"
     layer: int = 6
-    act_size: int = 768
+    act_size: int = 128
     device: str = "cuda:0"
-    dataset_name: str = "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
-    llm_device_count: int = 4
+    dataset_name: str = "apollo-research/roneneldan-TinyStories-tokenizer-gpt2"
 
     eval_data_seed: int = 59
     eval_tokens_buffer_batch_size_mult: int = 512
+
+    caching: bool = True
+    # These are the fields that must match before reusing an existing cache
+    cache_id_fields: list = field(default_factory=lambda: [
+        "seed",
+        "model_name",
+        "layer",
+        "site",
+        "seq_len",
+        "act_size",
+        "enc_dtype",
+        "dataset_name",
+        "buffer_refresh_size_tokens",
+    ])
 
     @property
     def seqs_per_dataset_row(self) -> int:
@@ -54,6 +70,10 @@ class DataConfig:
         return self.buffer_refresh_size_seqs // self.seqs_per_dataset_row
 
     @property
+    def buffer_refresh_size_tokens(self) -> int:
+        return self.buffer_refresh_size_seqs * self.seq_len
+
+    @property
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
 
@@ -64,21 +84,67 @@ class DataConfig:
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
+DEVICE_COUNT = torch.cuda.device_count()
+
 data_cfg = DataConfig()
 
 # Create directories
 this_dir = Path(__file__).parent
 cache_dir = this_dir / "cache"
+activations_dir = cache_dir / "activations"
 data_dir = this_dir / "data"
 model_dir = this_dir / "checkpoints"
 
-for dir_path in [cache_dir, data_dir, model_dir]:
+for dir_path in [cache_dir, data_dir, model_dir, activations_dir]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
 # Set environment variables for caching
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
+
+def get_relevant_config_subset(cfg: DataConfig) -> dict:
+    """
+    Returns a dictionary of only those fields in cfg.cache_id_fields.
+    Used to identify matching cache directories.
+    """
+    subset = {}
+    for field_name in cfg.cache_id_fields:
+        subset[field_name] = getattr(cfg, field_name)
+    return subset
+
+
+def find_existing_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
+    """
+    Checks each subdirectory in base_cache_dir for a config.json that matches
+    the relevant fields of cfg. Returns the path if found, else None.
+    """
+    desired_subset = get_relevant_config_subset(cfg)
+    for subdir in base_cache_dir.iterdir():
+        if not subdir.is_dir():
+            continue
+        config_path = subdir / "config.json"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                stored_cfg_subset = json.load(f)
+            if stored_cfg_subset == desired_subset:
+                return subdir
+    return None
+
+
+def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
+    """
+    Creates a new UUID-based folder under base_cache_dir,
+    writes config.json with relevant fields, and returns path.
+    """
+    new_cache_folder = base_cache_dir / str(uuid.uuid4())
+    new_cache_folder.mkdir(parents=True, exist_ok=True)
+
+    relevant_cfg = get_relevant_config_subset(cfg)
+    with open(new_cache_folder / "config.json", "w") as f:
+        json.dump(relevant_cfg, f, indent=2)
+
+    return new_cache_folder
 
 def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: dict):
     device = f"cuda:{device_id}"
@@ -116,6 +182,7 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
                         return_cache_object=True,
                     )
                     acts = cache.cache_dict[local_data_cfg.act_name]
+                    assert acts.shape[-1] == local_data_cfg.act_size, f"Expected {local_data_cfg.act_size} act size, got {acts.shape[-1]}"
                     acts = acts.reshape(
                         acts.shape[0] * acts.shape[1], local_data_cfg.act_size
                     )
@@ -174,7 +241,7 @@ class Buffer:
             self.workers = []
 
             # Spin up child processes that each hold a model
-            for i in range(data_cfg.llm_device_count):
+            for i in range(DEVICE_COUNT):
                 p = mp.Process(
                     target=worker,
                     args=(
@@ -193,6 +260,18 @@ class Buffer:
             self.local_model = transformer_lens.HookedTransformer.from_pretrained(
                 data_cfg.model_name, device=device
             ).to(local_dtype)
+        
+        self.chunk_index = 0
+
+        self.cache_path = None
+        if data_cfg.caching:
+            existing_cache = find_existing_cache_folder(data_cfg, activations_dir)
+            if existing_cache is not None:
+                print(f"Found existing cache: {existing_cache}")
+                self.cache_path = existing_cache
+            else:
+                self.cache_path = create_new_cache_folder(data_cfg, activations_dir)
+                print(f"Created new cache folder: {self.cache_path}")
 
         self.pointer = 0
         self.first = True
@@ -202,40 +281,52 @@ class Buffer:
     def refresh(self):
         print("Refreshing buffer...")
         start_time = time.time()
-        self.pointer = 0
 
-        rows = next(self.token_stream)
-        assert rows is not None, "No more data available from token_stream."
+        all_acts = None
+        # Attempt to load chunk from disk if caching is on
+        if data_cfg.caching and self.cache_path is not None:
+            chunk_path = self.cache_path / f"chunk_{self.chunk_index}.pt"
+            if chunk_path.exists():
+                print(f"Loading from cache chunk {self.chunk_index}")
+                all_acts = torch.load(chunk_path, map_location="cpu").to(DTYPES[data_cfg.enc_dtype])
 
-        if self.first:
-            rows_next = next(self.token_stream)
-            rows = torch.cat([rows, rows_next], dim=0)
+        if all_acts is None:
+            rows = next(self.token_stream)
+            assert rows is not None, "No more data available from token_stream."
 
-        self.first = False
+            if self.first:
+                rows_next = next(self.token_stream)
+                rows = torch.cat([rows, rows_next], dim=0)
 
-        print("Preprocessing rows...")
-        seqs = einops.rearrange(
-            rows,
-            "row (seq token) -> (row seq) token",
-            token=data_cfg.seq_len,
-            seq=data_cfg.seqs_per_dataset_row,
-        )
+            self.first = False
 
-        # Run inference, either in multiprocessing mode or single-process mode
-        if self.use_multiprocessing:
-            all_acts = self.run_inference_multi(seqs)
-        else:
-            all_acts = self.run_inference_mono(seqs)
+            print("Preprocessing rows...")
+            seqs = einops.rearrange(
+                rows,
+                "row (seq token) -> (row seq) token",
+                token=data_cfg.seq_len,
+                seq=data_cfg.seqs_per_dataset_row,
+            )
+
+            # Run inference, either in multiprocessing mode or single-process mode
+            if self.use_multiprocessing:
+                all_acts = self.run_inference_multi(seqs)
+            else:
+                all_acts = self.run_inference_mono(seqs)
+            
+            if data_cfg.caching and self.cache_path is not None:
+                torch.save(all_acts.to(DTYPES[data_cfg.cache_dtype]), self.cache_path / f"chunk_{self.chunk_index}.pt")
 
         acts_count = all_acts.shape[0]
         assert acts_count <= self.buffer.shape[0], "Buffer overflow"
         self.buffer[:acts_count] = all_acts
-        self.pointer = acts_count
 
-        # Shuffle
-        idx = torch.randperm(acts_count)
-        self.buffer[:acts_count] = self.buffer[idx]
+        # shuffle
+        idx = torch.randperm(self.buffer.shape[0])
+        self.buffer = self.buffer[idx]
         self.pointer = 0
+
+        self.chunk_index += 1
 
         print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
 
@@ -245,7 +336,7 @@ class Buffer:
         Run inference using multiple processes (one per device).
         """
         total_seqs = seqs.shape[0]
-        num_devices = data_cfg.llm_device_count
+        num_devices = DEVICE_COUNT
         chunk_size = total_seqs // num_devices
         seqs_list = []
 

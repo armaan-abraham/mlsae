@@ -6,7 +6,7 @@ import tqdm
 import wandb
 
 from mlsae.model import DeepSAE, ZERO_ACT_THRESHOLD
-from mlsae.utils import Buffer, data_cfg
+from mlsae.data import Buffer, data_cfg
 
 
 @dataclass
@@ -27,23 +27,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "l1_val": 12,
-                "weight_decay": 1e-4,
-            },
-            {
-                "name": "1-0_wd=3e-4",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 16,
-                "decoder_dim_mults": [],
-                "l1_val": 12,
-                "weight_decay": 3e-4,
-            },
-            {
-                "name": "1-1_wd=1e-4",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 16,
-                "decoder_dim_mults": [1],
-                "l1_val": 12,
-                "weight_decay": 1e-4,
+                "weight_decay": 5e-4,
             },
         ]
     )
