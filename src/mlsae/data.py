@@ -4,12 +4,16 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 import json
 import uuid
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import einops
 import torch
 import torch.multiprocessing as mp
 import transformer_lens
 from datasets import load_dataset
+from tqdm import tqdm
+from line_profiler import profile
 
 from transformers import AutoTokenizer
 
@@ -20,18 +24,21 @@ this_dir = Path(__file__).parent
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 131072
-    buffer_size_buffer_batch_size_mult: int = 256
+    buffer_size_buffer_batch_size_mult: int = 512
     seq_len: int = 64
-    model_batch_size_seqs: int = 512
-    dataset_row_len: int = 1024
+    model_batch_size_seqs: int = 1024
+    dataset_row_len: int = 256
     enc_dtype: str = "fp32"
     save_dtype: str = "bf16"
-    model_name: str = "pythia-14m"
+    model_name: str = "pythia-31m"
+    model_tokenizer_name: str = "EleutherAI/pythia-31m"
     site: str = "resid_pre"
     layer: int = 3
-    act_size: int = 128
+    act_size: int = 256
     device: str = "cuda:0"
-    dataset_name: str = "Bingsu/openwebtext_20p"
+    buffer_device: str = "cpu"
+    dataset_name: str = "Skylion007/openwebtext"
+    dataset_subset_size: int = int(5e6)
     data_is_tokenized: bool = False
     llm_device_count: int = 2
 
@@ -48,6 +55,7 @@ class DataConfig:
         "act_size",
         "enc_dtype",
         "dataset_name",
+        "dataset_row_len",
         "buffer_refresh_size_tokens",
         "save_dtype",
     ])
@@ -67,14 +75,14 @@ class DataConfig:
     @property
     def buffer_refresh_size_seqs(self) -> int:
         return self.buffer_size_seqs // 2
+    
+    @property
+    def buffer_refresh_size_rows(self) -> int:
+        return self.buffer_refresh_size_seqs // self.seqs_per_dataset_row
 
     @property
     def buffer_refresh_size_tokens(self) -> int:
         return self.buffer_refresh_size_seqs * self.seq_len
-
-    @property
-    def buffer_refresh_size_rows(self) -> int:
-        return self.buffer_refresh_size_seqs // self.seqs_per_dataset_row
 
     @property
     def act_name(self) -> str:
@@ -170,63 +178,100 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
                         return_cache_object=True,
                     )
                     acts = cache.cache_dict[local_data_cfg.act_name]
+                    assert acts.shape[-1] == local_data_cfg.act_size, f"Expected {local_data_cfg.act_size} act size, got {acts.shape[-1]}"
                     acts = acts.reshape(
                         acts.shape[0] * acts.shape[1], local_data_cfg.act_size
                     )
-                    all_acts.append(acts.cpu())
+                    all_acts.append(acts)
 
-            results.put(torch.cat(all_acts, dim=0).to("cpu"))
+            results.put(torch.cat(all_acts, dim=0).to(local_data_cfg.buffer_device))
 
     except Exception as e:
         results.put(e)
         raise
 
+assert not data_cfg.data_is_tokenized
 
-def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = False):
-    """
-    Pulls data from the specified dataset. 
-    If data_is_tokenized is False, applies a tokenizer to raw text before yielding.
-    If data_is_tokenized is True, uses row_batch["input_ids"] directly.
-    """
-    dataset_iter = load_dataset(
+def stream_training_chunks(
+    data_cfg,
+    cache_dir,
+    eval: bool = False,
+    thread_count: int = 32,
+):
+    start_time = time.time()
+    
+    # Load a subset of the dataset using either select or train_test_split
+    # Method 1: Using select with a range
+    dataset = load_dataset(
         data_cfg.dataset_name,
-        split="train",
-        streaming=True,
+        split=f"train[:{data_cfg.dataset_subset_size}]",  # This syntax selects first n_samples
         cache_dir=cache_dir,
         trust_remote_code=True,
+        num_proc=thread_count,
     )
-    dataset_iter = dataset_iter.shuffle(
-        buffer_size=buffer_size,
-        seed=data_cfg.seed if not eval else data_cfg.eval_data_seed,
-    )
-    row_batch_iter = dataset_iter.batch(buffer_size // 2)
+    
+    # Batch the data
+    dataset = dataset.batch(data_cfg.buffer_refresh_size_rows, num_proc=thread_count)
+    print(f"Time taken to initialize dataset: {time.time() - start_time:.2f} seconds")
 
-    # Instantiate a tokenizer if needed
-    tokenizer = None
-    if not data_cfg.data_is_tokenized:
-        tokenizer = AutoTokenizer.from_pretrained("EleutherAI/pythia-14m")
+    start_time = time.time()
+    
+    tokenizer = AutoTokenizer.from_pretrained(data_cfg.model_tokenizer_name)
     tokenizer.pad_token = tokenizer.eos_token
+    
+    for batch in dataset:
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            chunk_size = max(1, len(batch["text"]) // thread_count)
+            futures = []
 
-    for row_batch in row_batch_iter:
-        if data_cfg.data_is_tokenized:
-            # data should already have ["input_ids"]
-            token_tensors = torch.tensor(
-                row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device
-            )
-        else:
-            # data is not tokenized, so tokenize raw text here
-            # some versions of The Pile store text under row_batch["text"]
-            tokenized = tokenizer(
-                list(row_batch["text"]),
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=data_cfg.dataset_row_len,
-            )
-            token_tensors = tokenized["input_ids"].to(data_cfg.device)
+            for i in range(thread_count):
+                start_idx = i * chunk_size
+                end_idx = min((i + 1) * chunk_size, len(batch["text"]))
+                if start_idx >= len(batch["text"]):
+                    break
+                sub_texts = batch["text"][start_idx:end_idx]
+                futures.append(
+                    executor.submit(
+                        tokenizer,
+                        sub_texts,
+                        add_special_tokens=False,
+                        truncation=True,
+                        max_length=data_cfg.dataset_row_len,
+                        padding="max_length",
+                        return_tensors="pt",
+                    )
+                )
 
-        yield token_tensors
+            partial_encodings = [f.result() for f in futures]
 
+        combined = {}
+        for key in partial_encodings[0].keys():
+            combined[key] = torch.cat([p[key] for p in partial_encodings], dim=0)
+
+        batch_tokens = combined["input_ids"]
+
+        padding_token = tokenizer.pad_token_id
+        total_tokens = batch_tokens.numel()
+        padded_tokens = (batch_tokens == padding_token).sum().item()
+        padding_percentage = (padded_tokens / total_tokens) * 100
+        print(f"Padding percentage: {padding_percentage:.2f}%")
+        
+        assert isinstance(batch_tokens, torch.Tensor), f"Batch tokens are not a tensor: {type(batch_tokens)}"
+        assert batch_tokens.shape == (data_cfg.buffer_refresh_size_rows, data_cfg.dataset_row_len), (
+            f"Batch tokens shape is {batch_tokens.shape}, expected "
+            f"{(data_cfg.buffer_refresh_size_rows, data_cfg.dataset_row_len)}"
+        )
+        
+        batch_tokens = einops.rearrange(
+            batch_tokens,
+            "row (x seq_len) -> (row x) seq_len",
+            seq_len=data_cfg.seq_len,
+            x=data_cfg.seqs_per_dataset_row,
+            row=data_cfg.buffer_refresh_size_rows
+        )
+        print(f"Time taken to stream: {time.time() - start_time:.2f} seconds")
+        yield batch_tokens
+        start_time = time.time()
 
 class Buffer:
     def __init__(self, eval: bool = False, use_multiprocessing: bool = True):
@@ -235,13 +280,12 @@ class Buffer:
         self.token_stream = stream_training_chunks(
             data_cfg,
             cache_dir,
-            data_cfg.buffer_refresh_size_rows * 2,
             eval=eval,
         )
         self.buffer = torch.zeros(
             (data_cfg.buffer_size_tokens, data_cfg.act_size),
             dtype=DTYPES[data_cfg.enc_dtype],
-            device="cpu",
+            device=data_cfg.buffer_device,
         )
 
         if self.use_multiprocessing:
@@ -287,31 +331,24 @@ class Buffer:
     def refresh(self):
         print("Refreshing buffer...")
         start_time = time.time()
-        self.pointer = 0
-
-        rows = next(self.token_stream)
-        assert rows is not None, "No more data available from token_stream."
-
-        if self.first:
-            rows_next = next(self.token_stream)
-            rows = torch.cat([rows, rows_next], dim=0)
-            self.first = False
 
         all_acts = None
         if data_cfg.caching and self.cache_path is not None:
             chunk_path = self.cache_path / f"chunk_{self.chunk_index}.pt"
             if chunk_path.exists():
                 print(f"Loading from cache chunk {self.chunk_index}")
-                all_acts = torch.load(chunk_path, map_location="cpu").to(DTYPES[data_cfg.enc_dtype])
+                all_acts = torch.load(chunk_path, map_location=data_cfg.buffer_device).to(DTYPES[data_cfg.enc_dtype])
             
+        start = time.time()
         if all_acts is None:
-            print("Preprocessing rows...")
-            seqs = einops.rearrange(
-                rows,
-                "row (seq token) -> (row seq) token",
-                token=data_cfg.seq_len,
-                seq=data_cfg.seqs_per_dataset_row,
-            )
+            seqs = next(self.token_stream)
+            assert seqs is not None, "No more data available from token_stream."
+            assert seqs.shape[0] == data_cfg.buffer_refresh_size_seqs, f"Expected {data_cfg.buffer_refresh_size_seqs} sequences, got {seqs.shape[0]}"
+
+            if self.first:
+                seqs_next = next(self.token_stream)
+                seqs = torch.cat([seqs, seqs_next], dim=0)
+                self.first = False
 
             if self.use_multiprocessing:
                 all_acts = self.run_inference_multi(seqs)
@@ -321,15 +358,17 @@ class Buffer:
             if data_cfg.caching and self.cache_path is not None:
                 torch.save(all_acts.to(DTYPES[data_cfg.save_dtype]), self.cache_path / f"chunk_{self.chunk_index}.pt")
 
+        print(f"Time taken to run inference: {time.time() - start:.2f} seconds")
+
+        start = time.time()
         acts_count = all_acts.shape[0]
         assert acts_count <= self.buffer.shape[0], "Buffer overflow"
         self.buffer[:acts_count] = all_acts
-        self.pointer = acts_count
+        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0])]
 
-        idx = torch.randperm(acts_count)
-        self.buffer[:acts_count] = self.buffer[idx]
         self.pointer = 0
         self.chunk_index += 1
+        print(f"Time taken to refresh buffer: {time.time() - start:.2f} seconds")
 
         print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
 
@@ -380,7 +419,7 @@ class Buffer:
                 )
                 acts = cache.cache_dict[data_cfg.act_name]
                 acts = acts.reshape(acts.shape[0] * acts.shape[1], data_cfg.act_size)
-                all_acts_list.append(acts.cpu())
+                all_acts_list.append(acts.to(data_cfg.buffer_device))
 
         return torch.cat(all_acts_list, dim=0)
 

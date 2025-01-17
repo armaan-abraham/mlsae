@@ -33,7 +33,7 @@ class TrainConfig:
     )
 
     lr: float = 1e-4
-    num_tokens: int = int(5e8)
+    num_tokens: int = int(2e8)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
@@ -42,10 +42,12 @@ class TrainConfig:
     resample_dead_every_n_batches: int = 1500
     measure_freq_over_n_batches: int = 6
 
-    log_every_n_batches: int = 10
-
+    log_every_n_batches: int = 5
 
 train_cfg = TrainConfig()
+
+
+assert train_cfg.num_tokens < data_cfg.dataset_subset_size * data_cfg.dataset_row_len
 
 # TODO: SAVE
 

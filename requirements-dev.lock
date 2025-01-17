@@ -105,6 +105,8 @@ jupyter-core==5.7.2
     # via jupyter-client
 kiwisolver==1.4.8
     # via matplotlib
+line-profiler==4.2.0
+    # via mlsae
 markdown-it-py==3.0.0
     # via rich
 markupsafe==3.0.2
@@ -311,5 +313,3 @@ xxhash==3.5.0
     # via datasets
 yarl==1.18.3
     # via aiohttp
-zstandard==0.23.0
-    # via mlsae
