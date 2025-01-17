@@ -11,6 +11,9 @@ import torch.multiprocessing as mp
 import transformer_lens
 from datasets import load_dataset
 
+# Add a tokenizer import for the fallback path
+from transformers import AutoTokenizer
+
 this_dir = Path(__file__).parent
 
 
@@ -30,14 +33,13 @@ class DataConfig:
     act_size: int = 768
     device: str = "cuda:0"
     dataset_name: str = "EleutherAI/pile"
-    data_is_tokenized: bool = False
+    data_is_tokenized: bool = False  # New field
     llm_device_count: int = 4
 
     eval_data_seed: int = 59
     eval_tokens_buffer_batch_size_mult: int = 512
 
     caching: bool = True
-    # These are the fields that must match before reusing an existing cache
     cache_id_fields: list = field(default_factory=lambda: [
         "seed",
         "model_name",
@@ -104,10 +106,6 @@ os.environ["DATASETS_CACHE"] = str(cache_dir)
 
 
 def get_relevant_config_subset(cfg: DataConfig) -> dict:
-    """
-    Returns a dictionary of only those fields in cfg.cache_id_fields.
-    Used to identify matching cache directories.
-    """
     subset = {}
     for field_name in cfg.cache_id_fields:
         subset[field_name] = getattr(cfg, field_name)
@@ -115,10 +113,6 @@ def get_relevant_config_subset(cfg: DataConfig) -> dict:
 
 
 def find_existing_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
-    """
-    Checks each subdirectory in base_cache_dir for a config.json that matches
-    the relevant fields of cfg. Returns the path if found, else None.
-    """
     desired_subset = get_relevant_config_subset(cfg)
     for subdir in base_cache_dir.iterdir():
         if not subdir.is_dir():
@@ -133,10 +127,6 @@ def find_existing_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
 
 
 def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
-    """
-    Creates a new UUID-based folder under base_cache_dir,
-    writes config.json with relevant fields, and returns path.
-    """
     new_cache_folder = base_cache_dir / str(uuid.uuid4())
     new_cache_folder.mkdir(parents=True, exist_ok=True)
 
@@ -146,12 +136,10 @@ def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
 
     return new_cache_folder
 
+
 def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: dict):
     device = f"cuda:{device_id}"
     local_data_cfg = DataConfig(**data_cfg_dict)
-
-    DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-
     local_dtype = DTYPES[local_data_cfg.enc_dtype]
 
     local_model = transformer_lens.HookedTransformer.from_pretrained(
@@ -163,9 +151,10 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
             task = tasks.get()
             if task is None:
                 break
-            seq_chunk = task
 
-            # BOS
+            seq_chunk = task  # task is expected to be a tensor of token IDs
+
+            # BOS token (optional, but often helpful even if data is tokenized)
             seq_chunk[:, 0] = local_model.tokenizer.bos_token_id
 
             batch_size_seqs = local_data_cfg.model_batch_size_seqs
@@ -195,6 +184,11 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
 
 
 def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = False):
+    """
+    Pulls data from the specified dataset. 
+    If data_is_tokenized is False, applies a tokenizer to raw text before yielding.
+    If data_is_tokenized is True, uses row_batch["input_ids"] directly.
+    """
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
         split="train",
@@ -206,17 +200,34 @@ def stream_training_chunks(data_cfg, cache_dir, buffer_size: int, eval: bool = F
         seed=data_cfg.seed if not eval else data_cfg.eval_data_seed,
     )
     row_batch_iter = dataset_iter.batch(buffer_size // 2)
+
+    # Instantiate a tokenizer if needed
+    tokenizer = None
+    if not data_cfg.data_is_tokenized:
+        tokenizer = AutoTokenizer.from_pretrained(data_cfg.model_name)
+
     for row_batch in row_batch_iter:
-        yield torch.tensor(
-            row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device
-        )
+        if data_cfg.data_is_tokenized:
+            # data should already have ["input_ids"]
+            token_tensors = torch.tensor(
+                row_batch["input_ids"], dtype=torch.int32, device=data_cfg.device
+            )
+        else:
+            # data is not tokenized, so tokenize raw text here
+            # some versions of The Pile store text under row_batch["text"]
+            tokenized = tokenizer(
+                list(row_batch["text"]),
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=data_cfg.dataset_row_len,
+            )
+            token_tensors = tokenized["input_ids"].to(data_cfg.device)
+
+        yield token_tensors
 
 
 class Buffer:
-    """
-    Streams tokens and fills self.buffer with model activations.
-    """
-
     def __init__(self, eval: bool = False, use_multiprocessing: bool = True):
         print("Initializing buffer...")
         self.use_multiprocessing = use_multiprocessing
@@ -232,14 +243,11 @@ class Buffer:
             device="cpu",
         )
 
-        # Only set up multiprocessing if requested
         if self.use_multiprocessing:
             mp.set_start_method("spawn", force=True)
             self.tasks = mp.Queue()
             self.results = mp.Queue()
             self.workers = []
-
-            # Spin up child processes that each hold a model
             for i in range(data_cfg.llm_device_count):
                 p = mp.Process(
                     target=worker,
@@ -253,16 +261,13 @@ class Buffer:
                 p.start()
                 self.workers.append(p)
         else:
-            # If multiprocessing is off, load a local model in the main process
             device = data_cfg.device
             local_dtype = DTYPES[data_cfg.enc_dtype]
             self.local_model = transformer_lens.HookedTransformer.from_pretrained(
                 data_cfg.model_name, device=device
             ).to(local_dtype)
 
-        self.chunk_index = 0  # To track which chunk we are on
-
-        # Handle caching directory (either find existing or create new)
+        self.chunk_index = 0
         self.cache_path = None
         if data_cfg.caching:
             existing_cache = find_existing_cache_folder(data_cfg, activations_dir)
@@ -272,7 +277,6 @@ class Buffer:
             else:
                 self.cache_path = create_new_cache_folder(data_cfg, activations_dir)
                 print(f"Created new cache folder: {self.cache_path}")
-
 
         self.pointer = 0
         self.first = True
@@ -292,7 +296,6 @@ class Buffer:
             rows = torch.cat([rows, rows_next], dim=0)
             self.first = False
 
-        # Attempt to load chunk from disk if caching is on
         all_acts = None
         if data_cfg.caching and self.cache_path is not None:
             chunk_path = self.cache_path / f"chunk_{self.chunk_index}.pt"
@@ -309,13 +312,11 @@ class Buffer:
                 seq=data_cfg.seqs_per_dataset_row,
             )
 
-            # Run inference, either in multiprocessing mode or single-process mode
             if self.use_multiprocessing:
                 all_acts = self.run_inference_multi(seqs)
             else:
                 all_acts = self.run_inference_mono(seqs)
 
-            # Possibly store chunk if caching
             if data_cfg.caching and self.cache_path is not None:
                 torch.save(all_acts.to(DTYPES[data_cfg.save_dtype]), self.cache_path / f"chunk_{self.chunk_index}.pt")
 
@@ -324,7 +325,6 @@ class Buffer:
         self.buffer[:acts_count] = all_acts
         self.pointer = acts_count
 
-        # Shuffle
         idx = torch.randperm(acts_count)
         self.buffer[:acts_count] = self.buffer[idx]
         self.pointer = 0
@@ -334,9 +334,7 @@ class Buffer:
 
     @torch.no_grad()
     def run_inference_multi(self, seqs: torch.Tensor) -> torch.Tensor:
-        """
-        Run inference using multiple processes (one per device).
-        """
+        print("Running inference with multiprocessing...")
         total_seqs = seqs.shape[0]
         num_devices = data_cfg.llm_device_count
         chunk_size = total_seqs // num_devices
@@ -347,13 +345,9 @@ class Buffer:
             end_idx = total_seqs if i == (num_devices - 1) else (start_idx + chunk_size)
             seqs_list.append(seqs[start_idx:end_idx])
 
-        print("Running inference with multiprocessing...")
-
-        # Submit tasks to MP workers
         for i in range(num_devices):
             self.tasks.put(seqs_list[i])
 
-        # Collect results
         results = []
         for _ in range(num_devices):
             result = self.results.get()
@@ -366,11 +360,7 @@ class Buffer:
 
     @torch.no_grad()
     def run_inference_mono(self, seqs: torch.Tensor) -> torch.Tensor:
-        """
-        Run inference in single-process mode with a local model on one device.
-        """
         print("Running inference in single process...")
-        # BOS
         seqs[:, 0] = self.local_model.tokenizer.bos_token_id
 
         batch_size_seqs = data_cfg.model_batch_size_seqs
@@ -405,17 +395,10 @@ class Buffer:
 
     def __del__(self):
         print("Cleaning up Buffer resources...")
-
-        # If using multiprocessing, terminate all processes cleanly
         if self.use_multiprocessing:
-            # Send termination signal to all workers
             for _ in self.workers:
-                self.tasks.put(None)  # None is the termination signal
-
-            # Join all worker processes
+                self.tasks.put(None)
             for worker in self.workers:
                 worker.join()
-
-            # Close the queues
             self.tasks.close()
             self.results.close()
