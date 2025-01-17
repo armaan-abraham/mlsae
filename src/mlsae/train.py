@@ -6,7 +6,7 @@ import tqdm
 import wandb
 
 from mlsae.model import DeepSAE, ZERO_ACT_THRESHOLD
-from mlsae.utils import Buffer, data_cfg
+from mlsae.data import Buffer, data_cfg
 
 
 @dataclass
@@ -16,7 +16,7 @@ class TrainConfig:
             {
                 "name": "0-0_wd=1e-4",
                 "encoder_dim_mults": [],
-                "sparse_dim_mult": 16,
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
                 "l1_val": 12,
                 "weight_decay": 1e-4,
@@ -24,23 +24,23 @@ class TrainConfig:
             {
                 "name": "1-0_wd=1e-4",
                 "encoder_dim_mults": [1],
-                "sparse_dim_mult": 16,
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
                 "l1_val": 12,
                 "weight_decay": 1e-4,
             },
             {
-                "name": "1-0_wd=3e-4",
+                "name": "1-0_wd=6e-4",
                 "encoder_dim_mults": [1],
-                "sparse_dim_mult": 16,
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
                 "l1_val": 12,
-                "weight_decay": 3e-4,
+                "weight_decay": 6e-4,
             },
             {
                 "name": "1-1_wd=1e-4",
                 "encoder_dim_mults": [1],
-                "sparse_dim_mult": 16,
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [1],
                 "l1_val": 12,
                 "weight_decay": 1e-4,
@@ -49,7 +49,7 @@ class TrainConfig:
     )
 
     lr: float = 1e-4
-    num_tokens: int = int(1e9)
+    num_tokens: int = int(5e8)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
@@ -63,6 +63,7 @@ class TrainConfig:
 
 train_cfg = TrainConfig()
 
+# TODO: SAVE
 
 def model_step(entry, acts, is_train=True):
     """
@@ -139,6 +140,11 @@ def measure_and_resample_dead_features(
             print(f"Resampling {len(dead_features)} dead features for {entry['name']}")
             autoenc.resample_sparse_features(dead_features)
 
+def save_saes(autoencoders):
+    for entry in autoencoders:
+        autoenc = entry["model"]
+        arch_name = entry["name"]
+        autoenc.save(arch_name)
 
 def main():
     print("Starting training...")
@@ -220,6 +226,7 @@ def main():
 
             # Every resample_dead_every_n_batches, measure dead features (in parallel) and resample
             if (step_idx + 1) % train_cfg.resample_dead_every_n_batches == 0:
+
                 measure_and_resample_dead_features(
                     autoencoders,
                     buffer,
