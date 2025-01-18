@@ -23,28 +23,29 @@ class DeepSAE(nn.Module):
         sparse_dim_mult: int,
         decoder_dim_mults: list[int],
         act_size: int,
+        name: str = None,
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
-        topk: int = 128,
+        l1_lambda: float = 0.1,
         leaky_relu_slope: float = 0.05
     ):
         super().__init__()
 
         assert all(mult == 1 for mult in encoder_dim_mults)
+        self.name = name
         self.encoder_dims = [dim * act_size for dim in encoder_dim_mults]
         self.decoder_dims = [dim * act_size for dim in decoder_dim_mults]
         self.sparse_dim = sparse_dim_mult * act_size
-        assert topk > 0 and topk < self.sparse_dim, "topk must be greater than 0 and less than sparse_dim"
         self.act_size = act_size
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device = device
-        self.topk = topk  # Number of top activations to keep per example
+        self.l1_lambda = l1_lambda
         self.leaky_relu_slope = leaky_relu_slope
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
-        print(f"Using top-k: {self.topk}")
+        print(f"L1 lambda: {self.l1_lambda}")
         print(f"Device: {self.device}")
         print(f"Dtype: {self.dtype}")
 
@@ -64,7 +65,8 @@ class DeepSAE(nn.Module):
                 in_dim, dim, apply_weight_decay=True
             )
             encoder_layers.append(linear_layer)
-            encoder_layers.append(nn.LeakyReLU(negative_slope=self.leaky_relu_slope))
+            encoder_layers.append(nn.Tanh())
+            encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 
         self.encoder = nn.Sequential(*encoder_layers)
@@ -134,44 +136,38 @@ class DeepSAE(nn.Module):
     def init_weights(self):
         for layer in self.encoder:
             if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+                nn.init.kaiming_normal_(layer.weight)
                 nn.init.zeros_(layer.bias)
 
         for layer in self.decoder:
             if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+                nn.init.kaiming_normal_(layer.weight)
                 nn.init.zeros_(layer.bias)
 
     def forward(self, x):
-
         # Encode
         if self.encoder_dims:
             resid = self.encoder(x)
-            resid = resid - resid.mean(dim=1, keepdim=True)
-            resid = resid / resid.std(dim=1, keepdim=True)
             resid += x
         else:
             resid = x
 
-        # The final encoder layer is linear only, so let's apply ReLU here if needed
         feature_acts = F.relu(self.sparse_layer(resid))
-
-        # Keep only the top-k activations for each sample
-        values, indices = torch.topk(feature_acts, self.topk, dim=1)
-        mask = torch.zeros_like(feature_acts).scatter_(1, indices, 1.0)
-        feature_acts = feature_acts * mask
 
         # Decode
         reconstructed = self.decoder(feature_acts)
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        loss = mse_loss  # No L1 penalty anymore
+        
+        # L1 penalty on feature activations
+        l1_loss = self.l1_lambda * feature_acts.abs().mean()
+        loss = mse_loss + l1_loss
 
-        # Number of nonzero activations after top-k mask
+        # Number of nonzero activations (for monitoring)
         nonzero_acts = (feature_acts > ZERO_ACT_THRESHOLD).float().sum(dim=1).mean()
 
-        return loss, mse_loss, nonzero_acts, feature_acts, reconstructed
+        return loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
@@ -209,7 +205,7 @@ class DeepSAE(nn.Module):
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
             "device": self.device,
-            "topk": self.topk,
+            "l1_lambda": self.l1_lambda,
         }
         with open(save_path / f"{version}_cfg.json", "w") as f:
             json.dump(config_dict, f)
@@ -232,7 +228,7 @@ class DeepSAE(nn.Module):
             act_size=config_dict["act_size"],
             enc_dtype=config_dict["enc_dtype"],
             device=config_dict["device"],
-            topk=config_dict["topk"],
+            l1_lambda=config_dict["l1_lambda"],
         )
 
         state_dict = torch.load(load_path / f"{version}.pt", map_location="cpu")

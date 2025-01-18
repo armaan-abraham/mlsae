@@ -14,44 +14,44 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "0.2.0_k=8_lr=5e-5",
-                "encoder_dim_mults": [],
+                "name": "0",
+                "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
-                "topk": 8,
-                "weight_decay": 1e-3,
+                "l1_lambda": 1,
+                "weight_decay": 4e-4,
                 "lr": 5e-5,
                 "leaky_relu_slope": 0.05,
             },
             {
-                "name": "1.2.0_k=8_wd=1e-4_lr=5e-5",
+                "name": "1",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
-                "topk": 8,
-                "weight_decay": 1e-4,
-                "lr": 5e-5,
-                "leaky_relu_slope": 0.05,
-            },
-            {
-                "name": "1.2.0_k=8_wd=1e-4_lr=5e-5",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "topk": 8,
-                "weight_decay": 1e-4,
+                "l1_lambda": 1,
+                "weight_decay": 2e-4,
                 "lr": 5e-5,
                 "leaky_relu_slope": 0.1,
             },
             {
-                "name": "1.2.0_k=8_wd=1e-4_lr=5e-5",
+                "name": "2",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
-                "topk": 8,
-                "weight_decay": 1e-4,
+                "l1_lambda": 1,
+                "weight_decay": 6e-4,
                 "lr": 5e-5,
-                "leaky_relu_slope": 0.2,
+                "leaky_relu_slope": 0.1,
+            },
+            {
+                "name": "3",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 1,
+                "weight_decay": 4e-4,
+                "lr": 2.5e-5,
+                "leaky_relu_slope": 0.1,
             },
         ]
     )
@@ -61,7 +61,7 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    n_epochs: int = 2
+    n_epochs: int = 3
 
     resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6
@@ -75,7 +75,7 @@ train_cfg = TrainConfig()
 def model_step(entry, acts, is_train=True):
     """
     Step function to train or evaluate.
-    Now uses the top-k masked activation in the model and no L1 penalty.
+    Now uses L1 penalty for sparsity.
     """
     device = entry["device"]
     acts_local = acts.to(device, non_blocking=True) * 10
@@ -84,18 +84,20 @@ def model_step(entry, acts, is_train=True):
 
     if is_train:
         optimizer = entry["optimizer"]
-        loss, mse_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
+        loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
         loss.backward()
         autoenc.make_decoder_weights_and_grad_unit_norm()
         optimizer.step()
         optimizer.zero_grad()
     else:
         with torch.no_grad():
-            loss, mse_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
+            loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
+
 
     return {
         "loss": loss.item(),
         "mse_loss": mse_loss.item(),
+        "l1_loss": l1_loss.item(),
         "nonzero_acts": nonzero_acts.item(),
         "arch_name": arch_name,
         "feature_acts": feature_acts.detach(),
@@ -175,7 +177,8 @@ def main():
             act_size=data_cfg.act_size,
             enc_dtype=data_cfg.enc_dtype,
             device=device_str,
-            topk=arch_dict["topk"],
+            l1_lambda=arch_dict["l1_lambda"],
+            name=arch_dict["name"],
         )
         optimizer = torch.optim.Adam(
             autoenc.get_param_groups(weight_decay=arch_dict["weight_decay"]),
@@ -226,8 +229,11 @@ def main():
                         # Count how many features never activated in this log interval
                         dead_features_count = (entry["local_activation_counts"] == 0).sum().item()
                         wandb.log({
-                            f"{entry['name']}_{entry['model'].leaky_relu_slope}_dead_features": dead_features_count,
-                            f"{entry['name']}_{entry['model'].leaky_relu_slope}_loss": result["loss"],
+                            f"{entry['name']}_dead_features": dead_features_count,
+                            f"{entry['name']}_loss": result["loss"],
+                            f"{entry['name']}_loss_mse": result["mse_loss"],
+                            f"{entry['name']}_loss_l1": result["l1_loss"],
+                            f"{entry['name']}_nonzero_acts": result["nonzero_acts"],
                         })
 
                         # Reset counts for next interval
