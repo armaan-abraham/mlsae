@@ -18,31 +18,31 @@ class TrainConfig:
                 "encoder_dim_mults": [],
                 "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
-                "l1_val": 0.04,
+                "topk": 128,
                 "weight_decay": 1e-6,
             },
             {
-                "name": "2-0_wd=1e-7",
+                "name": "2-0_wd=1e-6",
                 "encoder_dim_mults": [2],
                 "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
-                "l1_val": 0.04,
-                "weight_decay": 1e-7,
+                "topk": 128,
+                "weight_decay": 1e-6,
             },
             {
-                "name": "1-0_wd=1e-7",
-                "encoder_dim_mults": [1],
+                "name": "2-0_wd=5e-6",
+                "encoder_dim_mults": [2],
                 "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
-                "l1_val": 0.04,
-                "weight_decay": 1e-7,
+                "topk": 128,
+                "weight_decay": 5e-6,
             },
             {
-                "name": "1-1_wd=1e-7",
-                "encoder_dim_mults": [1],
+                "name": "4-0_wd=1e-7",
+                "encoder_dim_mults": [4],
                 "sparse_dim_mult": 8,
-                "decoder_dim_mults": [1],
-                "l1_val": 0.04,
+                "decoder_dim_mults": [],
+                "topk": 128,
                 "weight_decay": 1e-7,
             },
         ]
@@ -55,7 +55,7 @@ class TrainConfig:
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
 
-    resample_dead_every_n_batches: int = 3000
+    resample_dead_every_n_batches: int = 1e6
     measure_freq_over_n_batches: int = 6
 
     log_every_n_batches: int = 10
@@ -66,40 +66,30 @@ train_cfg = TrainConfig()
 
 def model_step(entry, acts, is_train=True):
     """
-    A refactored step function that can either train or just evaluate
-    the model on a given batch. If is_train=True, it runs the forward+backward
-    passes and updates the model weights. If is_train=False, it only runs the
-    forward pass and returns the losses/activations.
+    Step function to train or evaluate.
+    Now uses the top-k masked activation in the model and no L1 penalty.
     """
     device = entry["device"]
     acts_local = acts.to(device, non_blocking=True)
-    # Print mean and std of input activations
-    # print(f"Acts mean: {acts_local.mean().item():.3f}, std: {acts_local.std().item():.3f}")
-    # print("Acts", acts_local[:10, :10])
     autoenc = entry["model"]
     arch_name = entry["name"]
-    l1_val = entry["l1_coeff"]
 
     if is_train:
         optimizer = entry["optimizer"]
-        loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
-        # print(f"Reconstructed mean: {reconstructed.mean().item():.3f}, std: {reconstructed.std().item():.3f}")
-        # print("Reconstructed", reconstructed[:10, :10])
+        loss, mse_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
         loss.backward()
         autoenc.make_decoder_weights_and_grad_unit_norm()
         optimizer.step()
         optimizer.zero_grad()
     else:
         with torch.no_grad():
-            loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
+            loss, mse_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
 
     return {
         "loss": loss.item(),
         "mse_loss": mse_loss.item(),
-        "l1_loss": l1_loss.item(),
         "nonzero_acts": nonzero_acts.item(),
         "arch_name": arch_name,
-        "l1_val": l1_val,
         "feature_acts": feature_acts.detach(),
     }
 
@@ -150,7 +140,7 @@ def main():
     for k, v in data_cfg.__dict__.items():
         print(f"{k}: {v}")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
-    wandb.run.name = "multi_sae_single_buffer_l1"
+    wandb.run.name = "multi_sae_single_buffer_topk"
 
     wandb.config.update(train_cfg)
     wandb.config.update(data_cfg)
@@ -164,7 +154,6 @@ def main():
     autoencoders = []
     idx = 0
 
-    # Loop over architectures that now include l1_val and weight_decay
     for arch_dict in train_cfg.architectures:
         device_id = idx % n_gpus
         device_str = f"cuda:{device_id}"
@@ -177,7 +166,7 @@ def main():
             act_size=data_cfg.act_size,
             enc_dtype=data_cfg.enc_dtype,
             device=device_str,
-            l1_coeff=arch_dict["l1_val"],
+            topk=arch_dict["topk"],
         )
         optimizer = torch.optim.Adam(
             autoenc.get_param_groups(weight_decay=arch_dict["weight_decay"]),
@@ -190,7 +179,6 @@ def main():
                 "optimizer": optimizer,
                 "device": device_str,
                 "name": arch_dict["name"],
-                "l1_coeff": arch_dict["l1_val"],
             }
         )
 
@@ -216,14 +204,11 @@ def main():
                 # Log periodically
                 if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
                     metrics = {
-                        f"{result['arch_name']}_l1={result['l1_val']}_loss": result["loss"],
-                        f"{result['arch_name']}_l1={result['l1_val']}_mse": result["mse_loss"],
-                        f"{result['arch_name']}_l1={result['l1_val']}_l1_loss": result["l1_loss"],
-                        f"{result['arch_name']}_l1={result['l1_val']}_nonzero_acts": result["nonzero_acts"],
+                        f"{result['arch_name']}_loss": result["loss"],
                     }
                     wandb.log(metrics)
 
-            # Every resample_dead_every_n_batches, measure dead features (in parallel) and resample
+            # Periodic dead-feature resampling
             if (step_idx + 1) % train_cfg.resample_dead_every_n_batches == 0:
                 measure_and_resample_dead_features(
                     autoencoders,
@@ -235,9 +220,8 @@ def main():
     finally:
         print("Saving all SAEs...")
         for entry in autoencoders:
-            autoenc = entry["model"]
             arch_name = entry["name"]
-            autoenc.save(arch_name)
+            entry["model"].save(arch_name)
         wandb.finish()
 
 

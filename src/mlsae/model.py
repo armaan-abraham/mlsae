@@ -14,9 +14,7 @@ ZERO_ACT_THRESHOLD = 1e-6
 class DeepSAE(nn.Module):
     """
     Multi-layer sparse autoencoder with a single sparse representation layer,
-    using ReLU + an L1 sparsity penalty on the hidden layer.
-    Now includes optional LayerNorm for intermediate encoder/decoder blocks,
-    and parameter-group assignment during layer creation.
+    where we replace L1 regularization with a top-k activation mask.
     """
 
     def __init__(
@@ -27,24 +25,24 @@ class DeepSAE(nn.Module):
         act_size: int,
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
-        l1_coeff: float = 0.0,
+        topk: int = 128
     ):
         super().__init__()
 
-        # Model hyperparameters
         self.encoder_dims = [dim * act_size for dim in encoder_dim_mults]
         self.decoder_dims = [dim * act_size for dim in decoder_dim_mults]
         self.sparse_dim = sparse_dim_mult * act_size
+        assert topk > 0 and topk < self.sparse_dim, "topk must be greater than 0 and less than sparse_dim"
         self.act_size = act_size
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device = device
-        self.l1_coeff = l1_coeff
+        self.topk = topk  # Number of top activations to keep per example
 
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
-        print(f"L1 coefficient: {self.l1_coeff}")
+        print(f"Using top-k: {self.topk}")
         print(f"Device: {self.device}")
         print(f"Dtype: {self.dtype}")
 
@@ -147,20 +145,22 @@ class DeepSAE(nn.Module):
         # The final encoder layer is linear only, so let's apply ReLU here if needed
         feature_acts = F.relu(encoded)
 
+        # Keep only the top-k activations for each sample
+        values, indices = torch.topk(feature_acts, self.topk, dim=1)
+        mask = torch.zeros_like(feature_acts).scatter_(1, indices, 1.0)
+        feature_acts = feature_acts * mask
+
         # Decode
         reconstructed = self.decoder(feature_acts)
 
-        # Compute MSE reconstruction loss
+        # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
+        loss = mse_loss  # No L1 penalty anymore
 
-        # Add L1 penalty on the sparse hidden activation
-        l1_loss = feature_acts.abs().mean() * self.l1_coeff
-        loss = mse_loss + l1_loss
-
-        # Calculate number of nonzero activations in the sparse layer
+        # Number of nonzero activations after top-k mask
         nonzero_acts = (feature_acts > ZERO_ACT_THRESHOLD).float().sum(dim=1).mean()
 
-        return loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed
+        return loss, mse_loss, nonzero_acts, feature_acts, reconstructed
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
@@ -198,7 +198,7 @@ class DeepSAE(nn.Module):
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
             "device": self.device,
-            "l1_coeff": self.l1_coeff,
+            "topk": self.topk,
         }
         with open(save_path / f"{version}_cfg.json", "w") as f:
             json.dump(config_dict, f)
@@ -221,7 +221,7 @@ class DeepSAE(nn.Module):
             act_size=config_dict["act_size"],
             enc_dtype=config_dict["enc_dtype"],
             device=config_dict["device"],
-            l1_coeff=config_dict["l1_coeff"],
+            topk=config_dict["topk"],
         )
 
         state_dict = torch.load(load_path / f"{version}.pt", map_location="cpu")
