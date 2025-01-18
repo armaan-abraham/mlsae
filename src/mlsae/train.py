@@ -14,39 +14,39 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "0.2.0_k=8_lr=5e-5",
-                "encoder_dim_mults": [],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "topk": 8,
-                "weight_decay": 1e-6,
-                "lr": 5e-5,
-            },
-            {
-                "name": "2.2.0_k=8_wd=2e-6_lr=5e-5",
+                "name": "2.2.0_k=8_wd=2e-3_lr=5e-5",
                 "encoder_dim_mults": [2],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "topk": 8,
-                "weight_decay": 2e-6,
+                "weight_decay": 2e-3,
                 "lr": 5e-5,
             },
             {
-                "name": "2.2.0_k=8_wd=4e-6_lr=5e-5",
+                "name": "2.2.0_k=8_wd=4e-3_lr=5e-5",
                 "encoder_dim_mults": [2],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "topk": 8,
-                "weight_decay": 4e-6,
+                "weight_decay": 4e-3,
                 "lr": 5e-5,
             },
             {
-                "name": "2.2.0_k=8_wd=8e-6_lr=5e-5",
+                "name": "2.2.0_k=8_wd=8e-3_lr=5e-5",
                 "encoder_dim_mults": [2],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "topk": 8,
-                "weight_decay": 8e-6,
+                "weight_decay": 8e-3,
+                "lr": 5e-5,
+            },
+            {
+                "name": "2.2.0_k=8_wd=2e-2_lr=5e-5",
+                "encoder_dim_mults": [2],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "topk": 8,
+                "weight_decay": 2e-2,
                 "lr": 5e-5,
             },
         ]
@@ -57,6 +57,7 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
+    n_epochs: int = 1
 
     resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6
@@ -199,45 +200,46 @@ def main():
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(autoencoders))
 
     try:
-        for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
-            acts = buffer.next()
+        for epoch in range(train_cfg.n_epochs):
+            for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
+                acts = buffer.next()
 
-            # Training step (in parallel for each autoencoder)
-            futures = []
-            for entry in autoencoders:
-                futures.append(executor.submit(model_step, entry, acts, True))
-
-            for entry, f in zip(autoencoders, futures):
-                result = f.result()
-
-                # Accumulate nonzero activations for each feature
-                active_mask = result["feature_acts"] > ZERO_ACT_THRESHOLD
-                entry["local_activation_counts"] += active_mask.sum(dim=0).long()
-
-            # Log periodically
-            if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
+                # Training step (in parallel for each autoencoder)
+                futures = []
                 for entry in autoencoders:
-                    # Count how many features never activated in this log interval
-                    dead_features_count = (entry["local_activation_counts"] == 0).sum().item()
-                    wandb.log({
-                        f"{entry['name']}_dead_features": dead_features_count,
-                        f"{entry['name']}_loss": result["loss"],
-                    })
+                    futures.append(executor.submit(model_step, entry, acts, True))
 
-                    # Reset counts for next interval
-                    entry["local_activation_counts"].zero_()
+                for entry, f in zip(autoencoders, futures):
+                    result = f.result()
 
-                # Also log any other metrics periodically if desired
-                # (Already logging loss, so you might combine or place above/below)
+                    # Accumulate nonzero activations for each feature
+                    active_mask = result["feature_acts"] > ZERO_ACT_THRESHOLD
+                    entry["local_activation_counts"] += active_mask.sum(dim=0).long()
 
-            # Periodic dead-feature resampling
-            if (step_idx + 1) % train_cfg.resample_dead_every_n_batches == 0:
-                measure_and_resample_dead_features(
-                    autoencoders,
-                    buffer,
-                    train_cfg.measure_freq_over_n_batches,
-                    executor,
-                )
+                    # Log periodically
+                    if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
+                        # Count how many features never activated in this log interval
+                        dead_features_count = (entry["local_activation_counts"] == 0).sum().item()
+                        wandb.log({
+                            f"{entry['name']}_dead_features": dead_features_count,
+                            f"{entry['name']}_loss": result["loss"],
+                        })
+
+                        # Reset counts for next interval
+                        entry["local_activation_counts"].zero_()
+
+                    # Also log any other metrics periodically if desired
+                    # (Already logging loss, so you might combine or place above/below)
+
+                # Periodic dead-feature resampling
+                if (step_idx + 1) % train_cfg.resample_dead_every_n_batches == 0:
+                    measure_and_resample_dead_features(
+                        autoencoders,
+                        buffer,
+                        train_cfg.measure_freq_over_n_batches,
+                        executor,
+                    )
+            buffer.chunk_index = 0
 
     finally:
         print("Saving all SAEs...")
