@@ -14,39 +14,39 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "2.2.0_k=8_wd=2e-3_lr=5e-5",
-                "encoder_dim_mults": [2],
+                "name": "0.2.0_k=8_lr=5e-5",
+                "encoder_dim_mults": [],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "topk": 8,
-                "weight_decay": 2e-3,
+                "weight_decay": 1e-3,
                 "lr": 5e-5,
             },
             {
-                "name": "2.2.0_k=8_wd=4e-3_lr=5e-5",
-                "encoder_dim_mults": [2],
+                "name": "1.2.0_k=8_wd=1e-4_lr=5e-5",
+                "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "topk": 8,
-                "weight_decay": 4e-3,
+                "weight_decay": 1e-4,
                 "lr": 5e-5,
             },
             {
-                "name": "2.2.0_k=8_wd=8e-3_lr=5e-5",
-                "encoder_dim_mults": [2],
+                "name": "1.2.0_k=8_wd=5e-5_lr=5e-5",
+                "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "topk": 8,
-                "weight_decay": 8e-3,
+                "weight_decay": 5e-5,
                 "lr": 5e-5,
             },
             {
-                "name": "2.2.0_k=8_wd=2e-2_lr=5e-5",
-                "encoder_dim_mults": [2],
+                "name": "1.2.0_k=8_wd=2e-4_lr=5e-5",
+                "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "topk": 8,
-                "weight_decay": 2e-2,
+                "weight_decay": 2e-4,
                 "lr": 5e-5,
             },
         ]
@@ -57,7 +57,7 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    n_epochs: int = 1
+    n_epochs: int = 2
 
     resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6

@@ -29,6 +29,7 @@ class DeepSAE(nn.Module):
     ):
         super().__init__()
 
+        assert all(mult == 1 for mult in encoder_dim_mults)
         self.encoder_dims = [dim * act_size for dim in encoder_dim_mults]
         self.decoder_dims = [dim * act_size for dim in decoder_dim_mults]
         self.sparse_dim = sparse_dim_mult * act_size
@@ -66,13 +67,13 @@ class DeepSAE(nn.Module):
             encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 
+        self.encoder = nn.Sequential(*encoder_layers)
+
         # Final encoder layer creates sparse representation
-        linear_sparse = self._create_linear_layer(
+        self.sparse_layer = self._create_linear_layer(
             in_dim, self.sparse_dim, apply_weight_decay=False
         )
-        encoder_layers.append(linear_sparse)
 
-        self.encoder = nn.Sequential(*encoder_layers)
 
         # --------------------------------------------------------
         # Build decoder
@@ -142,10 +143,16 @@ class DeepSAE(nn.Module):
                 nn.init.zeros_(layer.bias)
 
     def forward(self, x):
+
         # Encode
-        encoded = self.encoder(x)
+        if self.encoder_dims:
+            resid = self.encoder(x)
+            resid += x
+        else:
+            resid = x
+
         # The final encoder layer is linear only, so let's apply ReLU here if needed
-        feature_acts = F.relu(encoded)
+        feature_acts = F.relu(self.sparse_layer(resid))
 
         # Keep only the top-k activations for each sample
         values, indices = torch.topk(feature_acts, self.topk, dim=1)
