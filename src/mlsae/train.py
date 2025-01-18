@@ -14,45 +14,45 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "4.4.0_k=16_wd=1e-6_lr=5e-5",
-                "encoder_dim_mults": [4],
-                "sparse_dim_mult": 4,
+                "name": "0.2.0_k=8_lr=5e-5",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
-                "topk": 16,
+                "topk": 8,
                 "weight_decay": 1e-6,
                 "lr": 5e-5,
             },
             {
-                "name": "4.4.0_k=16_wd=2e-6_lr=5e-5",
-                "encoder_dim_mults": [4],
-                "sparse_dim_mult": 4,
+                "name": "2.2.0_k=8_wd=2e-6_lr=5e-5",
+                "encoder_dim_mults": [2],
+                "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
-                "topk": 16,
+                "topk": 8,
                 "weight_decay": 2e-6,
                 "lr": 5e-5,
             },
             {
-                "name": "4.4.0_k=16_wd=4e-6_lr=5e-5",
-                "encoder_dim_mults": [4],
-                "sparse_dim_mult": 4,
+                "name": "2.2.0_k=8_wd=4e-6_lr=5e-5",
+                "encoder_dim_mults": [2],
+                "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
-                "topk": 16,
+                "topk": 8,
                 "weight_decay": 4e-6,
                 "lr": 5e-5,
             },
             {
-                "name": "4.4.0_k=16_wd=8e-6_lr=5e-5",
-                "encoder_dim_mults": [4],
-                "sparse_dim_mult": 4,
+                "name": "2.2.0_k=8_wd=8e-6_lr=5e-5",
+                "encoder_dim_mults": [2],
+                "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
-                "topk": 16,
+                "topk": 8,
                 "weight_decay": 8e-6,
                 "lr": 5e-5,
             },
         ]
     )
 
-    num_tokens: int = int(1e9)
+    num_tokens: int = int(4e8)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
@@ -176,12 +176,19 @@ def main():
             lr=arch_dict["lr"],
             betas=(train_cfg.beta1, train_cfg.beta2),
         )
+
+        # Initialize a local activation count tensor (one entry per feature in sparse_dim)
+        local_activation_counts = torch.zeros(
+            autoenc.sparse_dim, device=device_str, dtype=torch.long
+        )
+
         autoencoders.append(
             {
                 "model": autoenc,
                 "optimizer": optimizer,
                 "device": device_str,
                 "name": arch_dict["name"],
+                "local_activation_counts": local_activation_counts,
             }
         )
 
@@ -200,16 +207,28 @@ def main():
             for entry in autoencoders:
                 futures.append(executor.submit(model_step, entry, acts, True))
 
-            # Aggregate results and log
-            for f in futures:
+            for entry, f in zip(autoencoders, futures):
                 result = f.result()
 
-                # Log periodically
-                if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
-                    metrics = {
-                        f"{result['arch_name']}_loss": result["loss"],
-                    }
-                    wandb.log(metrics)
+                # Accumulate nonzero activations for each feature
+                active_mask = result["feature_acts"] > ZERO_ACT_THRESHOLD
+                entry["local_activation_counts"] += active_mask.sum(dim=0).long()
+
+            # Log periodically
+            if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
+                for entry in autoencoders:
+                    # Count how many features never activated in this log interval
+                    dead_features_count = (entry["local_activation_counts"] == 0).sum().item()
+                    wandb.log({
+                        f"{entry['name']}_dead_features": dead_features_count,
+                        f"{entry['name']}_loss": result["loss"],
+                    })
+
+                    # Reset counts for next interval
+                    entry["local_activation_counts"].zero_()
+
+                # Also log any other metrics periodically if desired
+                # (Already logging loss, so you might combine or place above/below)
 
             # Periodic dead-feature resampling
             if (step_idx + 1) % train_cfg.resample_dead_every_n_batches == 0:

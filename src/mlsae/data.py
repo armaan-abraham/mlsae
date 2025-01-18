@@ -19,7 +19,7 @@ this_dir = Path(__file__).parent
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 131072
-    buffer_size_buffer_batch_size_mult: int = 256
+    buffer_size_buffer_batch_size_mult: int = 512
     seq_len: int = 64
     model_batch_size_seqs: int = 1024
     dataset_row_len: int = 512
@@ -86,6 +86,7 @@ class DataConfig:
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 DEVICE_COUNT = torch.cuda.device_count()
+print(f"Using {DEVICE_COUNT} GPUs")
 
 data_cfg = DataConfig()
 
