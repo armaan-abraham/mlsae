@@ -63,6 +63,7 @@ class DeepSAE(nn.Module):
             )
             encoder_layers.append(linear_layer)
             encoder_layers.append(nn.ReLU())
+            encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 
         # Final encoder layer creates sparse representation
@@ -85,6 +86,7 @@ class DeepSAE(nn.Module):
             )
             decoder_layers.append(linear_layer)
             decoder_layers.append(nn.ReLU())
+            decoder_layers.append(nn.LayerNorm(dim))
             out_dim = dim
 
         # Final decoder layer -> output

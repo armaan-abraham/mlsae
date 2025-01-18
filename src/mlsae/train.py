@@ -14,48 +14,51 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "0-0_wd=1e-6",
-                "encoder_dim_mults": [],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [],
-                "topk": 128,
-                "weight_decay": 1e-6,
-            },
-            {
-                "name": "2-0_wd=1e-6",
-                "encoder_dim_mults": [2],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [],
-                "topk": 128,
-                "weight_decay": 1e-6,
-            },
-            {
-                "name": "2-0_wd=5e-6",
-                "encoder_dim_mults": [2],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [],
-                "topk": 128,
-                "weight_decay": 5e-6,
-            },
-            {
-                "name": "4-0_wd=1e-7",
+                "name": "4.4.0_k=16_wd=1e-6_lr=5e-5",
                 "encoder_dim_mults": [4],
-                "sparse_dim_mult": 8,
+                "sparse_dim_mult": 4,
                 "decoder_dim_mults": [],
-                "topk": 128,
-                "weight_decay": 1e-7,
+                "topk": 16,
+                "weight_decay": 1e-6,
+                "lr": 5e-5,
+            },
+            {
+                "name": "4.4.0_k=16_wd=2e-6_lr=5e-5",
+                "encoder_dim_mults": [4],
+                "sparse_dim_mult": 4,
+                "decoder_dim_mults": [],
+                "topk": 16,
+                "weight_decay": 2e-6,
+                "lr": 5e-5,
+            },
+            {
+                "name": "4.4.0_k=16_wd=4e-6_lr=5e-5",
+                "encoder_dim_mults": [4],
+                "sparse_dim_mult": 4,
+                "decoder_dim_mults": [],
+                "topk": 16,
+                "weight_decay": 4e-6,
+                "lr": 5e-5,
+            },
+            {
+                "name": "4.4.0_k=16_wd=8e-6_lr=5e-5",
+                "encoder_dim_mults": [4],
+                "sparse_dim_mult": 4,
+                "decoder_dim_mults": [],
+                "topk": 16,
+                "weight_decay": 8e-6,
+                "lr": 5e-5,
             },
         ]
     )
 
-    lr: float = 1e-4
     num_tokens: int = int(1e9)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
 
-    resample_dead_every_n_batches: int = 1e6
+    resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6
 
     log_every_n_batches: int = 10
@@ -70,7 +73,7 @@ def model_step(entry, acts, is_train=True):
     Now uses the top-k masked activation in the model and no L1 penalty.
     """
     device = entry["device"]
-    acts_local = acts.to(device, non_blocking=True)
+    acts_local = acts.to(device, non_blocking=True) * 10
     autoenc = entry["model"]
     arch_name = entry["name"]
 
@@ -170,7 +173,7 @@ def main():
         )
         optimizer = torch.optim.Adam(
             autoenc.get_param_groups(weight_decay=arch_dict["weight_decay"]),
-            lr=train_cfg.lr,
+            lr=arch_dict["lr"],
             betas=(train_cfg.beta1, train_cfg.beta2),
         )
         autoencoders.append(

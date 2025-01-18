@@ -10,6 +10,7 @@ import torch
 import torch.multiprocessing as mp
 import transformer_lens
 from datasets import load_dataset
+import threading
 
 this_dir = Path(__file__).parent
 
@@ -254,15 +255,14 @@ class Buffer:
                 p.start()
                 self.workers.append(p)
         else:
-            # If multiprocessing is off, load a local model in the main process
-            device = data_cfg.device
-            local_dtype = DTYPES[data_cfg.enc_dtype]
+            # Single-process fallback
             self.local_model = transformer_lens.HookedTransformer.from_pretrained(
-                data_cfg.model_name, device=device
-            ).to(local_dtype)
-        
+                data_cfg.model_name, device=data_cfg.device
+            ).to(DTYPES[data_cfg.enc_dtype])
+
         self.chunk_index = 0
 
+        # Find or create cache folder if caching is enabled
         self.cache_path = None
         if data_cfg.caching:
             existing_cache = find_existing_cache_folder(data_cfg, activations_dir)
@@ -275,65 +275,117 @@ class Buffer:
 
         self.pointer = 0
         self.first = True
+
+        # Prefetch-related members
+        self._prefetch_thread = None
+        self._prefetched_acts = None
+        self._prefetch_lock = threading.Lock()
+
+        # Load the very first buffer content
         self.refresh()
+
+    def _prefetch_chunk(self, next_index: int):
+        """
+        In a background thread, check if the given chunk is in the cache. 
+        If yes, load it into _prefetched_acts; if not, do nothing.
+        """
+        if not data_cfg.caching or self.cache_path is None:
+            return
+
+        chunk_path = self.cache_path / f"chunk_{next_index}.pt"
+        if chunk_path.exists():
+            # If it exists, load it
+            print(f"(Prefetch) Found chunk {next_index} in cache. Loading...")
+            acts = torch.load(chunk_path, map_location="cpu").to(DTYPES[data_cfg.enc_dtype])
+
+            with self._prefetch_lock:
+                # Store for main thread to pick up on next refresh()
+                self._prefetched_acts = acts
+        else:
+            print(f"(Prefetch) Chunk {next_index} not found in cache. Skipping prefetch.")
 
     @torch.no_grad()
     def refresh(self):
-        print("Refreshing buffer...")
-        start_time = time.time()
+        """
+        Refreshes the buffer with the next chunk. If a prefetched chunk is
+        available, uses it. Otherwise, normal logic applies. Spawns a new thread
+        to prefetch the next chunk from cache for potential future use.
+        """
+        # Wait for any existing prefetch thread to finish
+        if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join()
 
-        all_acts = None
-        # Attempt to load chunk from disk if caching is on
-        if data_cfg.caching and self.cache_path is not None:
-            chunk_path = self.cache_path / f"chunk_{self.chunk_index}.pt"
-            if chunk_path.exists():
-                print(f"Loading from cache chunk {self.chunk_index}")
-                all_acts = torch.load(chunk_path, map_location="cpu").to(DTYPES[data_cfg.enc_dtype])
-
-        if all_acts is None:
-            rows = next(self.token_stream)
-            assert rows is not None, "No more data available from token_stream."
-
-            if self.first:
-                rows_next = next(self.token_stream)
-                rows = torch.cat([rows, rows_next], dim=0)
-
-            self.first = False
-
-            print("Preprocessing rows...")
-            seqs = einops.rearrange(
-                rows,
-                "row (seq token) -> (row seq) token",
-                token=data_cfg.seq_len,
-                seq=data_cfg.seqs_per_dataset_row,
-            )
-
-            # Run inference, either in multiprocessing mode or single-process mode
-            if self.use_multiprocessing:
-                all_acts = self.run_inference_multi(seqs)
+        # Check if there is a prefetched chunk available
+        with self._prefetch_lock:
+            if self._prefetched_acts is not None:
+                all_acts = self._prefetched_acts
+                self._prefetched_acts = None
             else:
-                all_acts = self.run_inference_mono(seqs)
-            
-            if data_cfg.caching and self.cache_path is not None:
-                torch.save(all_acts.to(DTYPES[data_cfg.cache_dtype]), self.cache_path / f"chunk_{self.chunk_index}.pt")
+                all_acts = None
 
+        start_time = time.time()
+        # If we did not have prefetched data, do the usual load/generate
+        if all_acts is None:
+            print(f"Refreshing buffer for chunk {self.chunk_index}...")
+            # Try to load from cache if caching
+            if data_cfg.caching and self.cache_path is not None:
+                chunk_path = self.cache_path / f"chunk_{self.chunk_index}.pt"
+                if chunk_path.exists():
+                    print(f"Loading chunk {self.chunk_index} from cache...")
+                    all_acts = torch.load(chunk_path, map_location="cpu").to(
+                        DTYPES[data_cfg.enc_dtype]
+                    )
+
+            # If still None, generate from data
+            if all_acts is None:
+                rows = next(self.token_stream)
+                assert rows is not None, "No more data from token_stream."
+                if self.first:
+                    rows_next = next(self.token_stream)
+                    rows = torch.cat([rows, rows_next], dim=0)
+                self.first = False
+
+                seqs = einops.rearrange(
+                    rows,
+                    "row (seq token) -> (row seq) token",
+                    token=data_cfg.seq_len,
+                    seq=data_cfg.seqs_per_dataset_row,
+                )
+                if self.use_multiprocessing:
+                    all_acts = self.run_inference_multi(seqs)
+                else:
+                    all_acts = self.run_inference_mono(seqs)
+
+                # Save to cache if enabled
+                if data_cfg.caching and self.cache_path is not None:
+                    torch.save(
+                        all_acts.to(DTYPES[data_cfg.cache_dtype]),
+                        self.cache_path / f"chunk_{self.chunk_index}.pt",
+                    )
+
+        # Fill self.buffer, shuffle, update chunk/pointer
         acts_count = all_acts.shape[0]
         assert acts_count <= self.buffer.shape[0], "Buffer overflow"
         self.buffer[:acts_count] = all_acts
 
-        # shuffle
         idx = torch.randperm(self.buffer.shape[0])
         self.buffer = self.buffer[idx]
         self.pointer = 0
-
         self.chunk_index += 1
 
-        print(f"Buffer refreshed in {time.time() - start_time:.2f} seconds.")
+        print(f"Buffer refreshed in {time.time() - start_time:.2f} s.")
+
+        # Spawn a thread to prefetch next chunk from cache (if it exists)
+        self._prefetch_thread = threading.Thread(
+            target=self._prefetch_chunk,
+            args=(self.chunk_index,)  # next chunk index
+        )
+        self._prefetch_thread.start()
 
     @torch.no_grad()
     def run_inference_multi(self, seqs: torch.Tensor) -> torch.Tensor:
         """
-        Run inference using multiple processes (one per device).
+        Distributes seqs across multiple processes (one per GPU). Collects results.
         """
         total_seqs = seqs.shape[0]
         num_devices = DEVICE_COUNT
@@ -346,12 +398,9 @@ class Buffer:
             seqs_list.append(seqs[start_idx:end_idx])
 
         print("Running inference with multiprocessing...")
-
-        # Submit tasks to MP workers
         for i in range(num_devices):
             self.tasks.put(seqs_list[i])
 
-        # Collect results
         results = []
         for _ in range(num_devices):
             result = self.results.get()
@@ -365,17 +414,15 @@ class Buffer:
     @torch.no_grad()
     def run_inference_mono(self, seqs: torch.Tensor) -> torch.Tensor:
         """
-        Run inference in single-process mode with a local model on one device.
+        Single-process fallback: run inference in the current process.
         """
         print("Running inference in single process...")
-        # BOS
         seqs[:, 0] = self.local_model.tokenizer.bos_token_id
-
         batch_size_seqs = data_cfg.model_batch_size_seqs
         all_acts_list = []
         seqs = seqs.to(data_cfg.device)
-
         local_dtype = DTYPES[data_cfg.enc_dtype]
+
         with torch.autocast("cuda", local_dtype):
             for start_idx in range(0, seqs.shape[0], batch_size_seqs):
                 sub_chunk = seqs[start_idx : start_idx + batch_size_seqs]
@@ -403,17 +450,13 @@ class Buffer:
 
     def __del__(self):
         print("Cleaning up Buffer resources...")
-
-        # If using multiprocessing, terminate all processes cleanly
         if self.use_multiprocessing:
-            # Send termination signal to all workers
+            # Send termination signal to workers
             for _ in self.workers:
-                self.tasks.put(None)  # None is the termination signal
-
-            # Join all worker processes
+                self.tasks.put(None)
             for worker in self.workers:
                 worker.join()
-
-            # Close the queues
             self.tasks.close()
             self.results.close()
+        if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join()
