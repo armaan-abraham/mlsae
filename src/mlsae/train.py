@@ -14,20 +14,36 @@ class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
             {
-                "name": "0-0_wd=1e-4",
+                "name": "0-0_wd=1e-6",
                 "encoder_dim_mults": [],
-                "sparse_dim_mult": 16,
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
-                "l1_val": 12,
-                "weight_decay": 1e-4,
+                "l1_val": 0.04,
+                "weight_decay": 1e-6,
             },
             {
-                "name": "1-0_wd=1e-4",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 16,
+                "name": "2-0_wd=1e-7",
+                "encoder_dim_mults": [2],
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
-                "l1_val": 12,
-                "weight_decay": 5e-4,
+                "l1_val": 0.04,
+                "weight_decay": 1e-7,
+            },
+            {
+                "name": "1-0_wd=1e-7",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 8,
+                "decoder_dim_mults": [],
+                "l1_val": 0.04,
+                "weight_decay": 1e-7,
+            },
+            {
+                "name": "1-1_wd=1e-7",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 8,
+                "decoder_dim_mults": [1],
+                "l1_val": 0.04,
+                "weight_decay": 1e-7,
             },
         ]
     )
@@ -39,7 +55,7 @@ class TrainConfig:
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
 
-    resample_dead_every_n_batches: int = 1500
+    resample_dead_every_n_batches: int = 3000
     measure_freq_over_n_batches: int = 6
 
     log_every_n_batches: int = 10
@@ -57,20 +73,25 @@ def model_step(entry, acts, is_train=True):
     """
     device = entry["device"]
     acts_local = acts.to(device, non_blocking=True)
+    # Print mean and std of input activations
+    # print(f"Acts mean: {acts_local.mean().item():.3f}, std: {acts_local.std().item():.3f}")
+    # print("Acts", acts_local[:10, :10])
     autoenc = entry["model"]
     arch_name = entry["name"]
     l1_val = entry["l1_coeff"]
 
     if is_train:
         optimizer = entry["optimizer"]
-        loss, mse_loss, l1_loss, nonzero_acts, feature_acts = autoenc(acts_local)
+        loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
+        # print(f"Reconstructed mean: {reconstructed.mean().item():.3f}, std: {reconstructed.std().item():.3f}")
+        # print("Reconstructed", reconstructed[:10, :10])
         loss.backward()
         autoenc.make_decoder_weights_and_grad_unit_norm()
         optimizer.step()
         optimizer.zero_grad()
     else:
         with torch.no_grad():
-            loss, mse_loss, l1_loss, nonzero_acts, feature_acts = autoenc(acts_local)
+            loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
 
     return {
         "loss": loss.item(),

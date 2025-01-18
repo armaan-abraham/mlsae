@@ -160,7 +160,7 @@ class DeepSAE(nn.Module):
         # Calculate number of nonzero activations in the sparse layer
         nonzero_acts = (feature_acts > ZERO_ACT_THRESHOLD).float().sum(dim=1).mean()
 
-        return loss, mse_loss, l1_loss, nonzero_acts, feature_acts
+        return loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):

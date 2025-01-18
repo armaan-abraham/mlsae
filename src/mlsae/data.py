@@ -17,8 +17,8 @@ this_dir = Path(__file__).parent
 @dataclass
 class DataConfig:
     seed: int = 49
-    buffer_batch_size_tokens: int = 65536
-    buffer_size_buffer_batch_size_mult: int = 512
+    buffer_batch_size_tokens: int = 131072
+    buffer_size_buffer_batch_size_mult: int = 256
     seq_len: int = 64
     model_batch_size_seqs: int = 1024
     dataset_row_len: int = 512
@@ -186,7 +186,7 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int, data_cfg_dict: di
                     acts = acts.reshape(
                         acts.shape[0] * acts.shape[1], local_data_cfg.act_size
                     )
-                    all_acts.append(acts.cpu())
+                    all_acts.append(acts)
 
             results.put(torch.cat(all_acts, dim=0).to("cpu"))
 
