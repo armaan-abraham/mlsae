@@ -65,7 +65,6 @@ class DeepSAE(nn.Module):
             )
             encoder_layers.append(linear_layer)
             encoder_layers.append(nn.LeakyReLU(negative_slope=self.leaky_relu_slope))
-            encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 
         self.encoder = nn.Sequential(*encoder_layers)
@@ -148,6 +147,8 @@ class DeepSAE(nn.Module):
         # Encode
         if self.encoder_dims:
             resid = self.encoder(x)
+            resid = resid - resid.mean(dim=1, keepdim=True)
+            resid = resid / resid.std(dim=1, keepdim=True)
             resid += x
         else:
             resid = x
