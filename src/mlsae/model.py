@@ -25,7 +25,8 @@ class DeepSAE(nn.Module):
         act_size: int,
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
-        topk: int = 128
+        topk: int = 128,
+        leaky_relu_slope: float = 0.05
     ):
         super().__init__()
 
@@ -39,7 +40,7 @@ class DeepSAE(nn.Module):
         self.dtype = DTYPES[enc_dtype]
         self.device = device
         self.topk = topk  # Number of top activations to keep per example
-
+        self.leaky_relu_slope = leaky_relu_slope
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
@@ -63,7 +64,7 @@ class DeepSAE(nn.Module):
                 in_dim, dim, apply_weight_decay=True
             )
             encoder_layers.append(linear_layer)
-            encoder_layers.append(nn.ReLU())
+            encoder_layers.append(nn.LeakyReLU(negative_slope=self.leaky_relu_slope))
             encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
 

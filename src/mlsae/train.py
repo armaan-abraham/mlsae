@@ -21,6 +21,7 @@ class TrainConfig:
                 "topk": 8,
                 "weight_decay": 1e-3,
                 "lr": 5e-5,
+                "leaky_relu_slope": 0.05,
             },
             {
                 "name": "1.2.0_k=8_wd=1e-4_lr=5e-5",
@@ -30,6 +31,7 @@ class TrainConfig:
                 "topk": 8,
                 "weight_decay": 1e-4,
                 "lr": 5e-5,
+                "leaky_relu_slope": 0.05,
             },
             {
                 "name": "1.2.0_k=8_wd=5e-5_lr=5e-5",
@@ -39,6 +41,7 @@ class TrainConfig:
                 "topk": 8,
                 "weight_decay": 5e-5,
                 "lr": 5e-5,
+                "leaky_relu_slope": 0.1,
             },
             {
                 "name": "1.2.0_k=8_wd=2e-4_lr=5e-5",
@@ -48,6 +51,7 @@ class TrainConfig:
                 "topk": 8,
                 "weight_decay": 2e-4,
                 "lr": 5e-5,
+                "leaky_relu_slope": 0.2,
             },
         ]
     )
@@ -167,6 +171,7 @@ def main():
             encoder_dim_mults=arch_dict["encoder_dim_mults"],
             sparse_dim_mult=arch_dict["sparse_dim_mult"],
             decoder_dim_mults=arch_dict["decoder_dim_mults"],
+            leaky_relu_slope=arch_dict["leaky_relu_slope"],
             act_size=data_cfg.act_size,
             enc_dtype=data_cfg.enc_dtype,
             device=device_str,
@@ -221,8 +226,8 @@ def main():
                         # Count how many features never activated in this log interval
                         dead_features_count = (entry["local_activation_counts"] == 0).sum().item()
                         wandb.log({
-                            f"{entry['name']}_dead_features": dead_features_count,
-                            f"{entry['name']}_loss": result["loss"],
+                            f"{entry['name']}_{entry['model'].leaky_relu_slope}_dead_features": dead_features_count,
+                            f"{entry['name']}_{entry['model'].leaky_relu_slope}_loss": result["loss"],
                         })
 
                         # Reset counts for next interval
