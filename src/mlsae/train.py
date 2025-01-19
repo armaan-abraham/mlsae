@@ -15,12 +15,12 @@ class TrainConfig:
         default_factory=lambda: [
             {
                 "name": "0",
-                "encoder_dim_mults": [1],
+                "encoder_dim_mults": [],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "l1_lambda": 1,
                 "weight_decay": 4e-4,
-                "lr": 5e-5,
+                "lr": 4e-3,
                 "leaky_relu_slope": 0.05,
             },
             {
@@ -29,18 +29,18 @@ class TrainConfig:
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "l1_lambda": 1,
-                "weight_decay": 2e-4,
-                "lr": 5e-5,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
                 "leaky_relu_slope": 0.1,
             },
             {
                 "name": "2",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
+                "decoder_dim_mults": [1],
                 "l1_lambda": 1,
-                "weight_decay": 6e-4,
-                "lr": 5e-5,
+                "weight_decay": 1e-4,
+                "lr": 4e-3,
                 "leaky_relu_slope": 0.1,
             },
             {
@@ -49,8 +49,8 @@ class TrainConfig:
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "l1_lambda": 1,
-                "weight_decay": 4e-4,
-                "lr": 2.5e-5,
+                "weight_decay": 1e-4,
+                "lr": 4e-3,
                 "leaky_relu_slope": 0.1,
             },
         ]
@@ -61,7 +61,7 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    n_epochs: int = 3
+    n_epochs: int = 8
 
     resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6
@@ -180,10 +180,9 @@ def main():
             l1_lambda=arch_dict["l1_lambda"],
             name=arch_dict["name"],
         )
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.SGD(
             autoenc.get_param_groups(weight_decay=arch_dict["weight_decay"]),
             lr=arch_dict["lr"],
-            betas=(train_cfg.beta1, train_cfg.beta2),
         )
 
         # Initialize a local activation count tensor (one entry per feature in sparse_dim)
