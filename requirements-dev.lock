@@ -100,6 +100,8 @@ huggingface-hub==0.27.1
 idna==3.10
     # via requests
     # via yarl
+iniconfig==2.0.0
+    # via pytest
 ipykernel==6.29.5
     # via mlsae
 ipython==8.31.0
@@ -187,6 +189,7 @@ packaging==24.2
     # via huggingface-hub
     # via ipykernel
     # via matplotlib
+    # via pytest
     # via transformers
 pandas==2.2.3
     # via datasets
@@ -204,6 +207,8 @@ pillow==11.1.0
 platformdirs==4.3.6
     # via jupyter-core
     # via wandb
+pluggy==1.5.0
+    # via pytest
 prompt-toolkit==3.0.48
     # via ipython
 propcache==0.2.1
@@ -232,6 +237,8 @@ pygments==2.19.1
     # via rich
 pyparsing==3.2.1
     # via matplotlib
+pytest==8.3.4
+    # via mlsae
 python-dateutil==2.9.0.post0
     # via botocore
     # via jupyter-client

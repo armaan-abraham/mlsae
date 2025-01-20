@@ -57,26 +57,26 @@ def save_model(
 
     # 3) Optionally save to S3
     if save_to_s3 and S3_BUCKET is not None:
+        pt_local_path = str(save_path / f"{model_id}.pt")
+        cfg_local_path = str(save_path / f"{model_id}_cfg.json")
+
+        key_pt = f"{S3_PREFIX}/{architecture_name}/{model_id}.pt" if S3_PREFIX else f"{architecture_name}/{model_id}.pt"
+        key_cfg = f"{S3_PREFIX}/{architecture_name}/{model_id}_cfg.json" if S3_PREFIX else f"{architecture_name}/{model_id}_cfg.json"
+
+        s3_client = boto3.client('s3')
         try:
-            pt_local_path = str(save_path / f"{model_id}.pt")
-            cfg_local_path = str(save_path / f"{model_id}_cfg.json")
-
-            key_pt = f"{S3_PREFIX}/{architecture_name}/{model_id}.pt" if S3_PREFIX else f"{architecture_name}/{model_id}.pt"
-            key_cfg = f"{S3_PREFIX}/{architecture_name}/{model_id}_cfg.json" if S3_PREFIX else f"{architecture_name}/{model_id}_cfg.json"
-
-            s3_client = boto3.client('s3')
-            try:
-                s3_client.upload_file(pt_local_path, S3_BUCKET, key_pt)
-                s3_client.upload_file(cfg_local_path, S3_BUCKET, key_cfg)
-                print(f"Uploaded '{model_id}' of {architecture_name} to S3 bucket '{S3_BUCKET}'.")
-            except NoCredentialsError:
-                print("No AWS credentials found. Could not upload to S3.")
-            except ClientError as e:
-                print(f"Client error uploading to S3: {e}")
-            except Exception as e:
-                print(f"Unexpected error uploading to S3: {e}")
+            s3_client.upload_file(pt_local_path, S3_BUCKET, key_pt)
+            s3_client.upload_file(cfg_local_path, S3_BUCKET, key_cfg)
+            print(f"Uploaded '{model_id}' of {architecture_name} to S3 bucket '{S3_BUCKET}'.")
+        except NoCredentialsError as e:
+            print("No AWS credentials found. Could not upload to S3.")
+            raise e
+        except ClientError as e:
+            print(f"Client error uploading to S3: {e}")
+            raise e
         except Exception as e:
             print(f"Unexpected error uploading to S3: {e}")
+            raise e
 
 def load_model(
     cls,

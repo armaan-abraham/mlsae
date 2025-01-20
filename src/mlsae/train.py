@@ -257,7 +257,10 @@ def main():
         print("Saving all SAEs...")
         for entry in autoencoders:
             arch_name = entry["name"]
-            entry["model"].save(arch_name, save_to_s3=train_cfg.save_to_s3)
+            try:
+                entry["model"].save(arch_name, save_to_s3=train_cfg.save_to_s3)
+            except Exception as e:
+                print(f"Error saving model {arch_name}: {e}")
         wandb.finish()
 
 
