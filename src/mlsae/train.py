@@ -68,6 +68,8 @@ class TrainConfig:
 
     log_every_n_batches: int = 10
 
+    save_to_s3: bool = True
+
 
 train_cfg = TrainConfig()
 
@@ -204,7 +206,7 @@ def main():
     print("Training all SAEs...")
 
     # We'll use a ThreadPoolExecutor for both training and dead-feature measurement
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(autoencoders))
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=torch.cuda.device_count())
 
     try:
         for epoch in range(train_cfg.n_epochs):
@@ -255,7 +257,7 @@ def main():
         print("Saving all SAEs...")
         for entry in autoencoders:
             arch_name = entry["name"]
-            entry["model"].save(arch_name)
+            entry["model"].save(arch_name, save_to_s3=train_cfg.save_to_s3)
         wandb.finish()
 
 

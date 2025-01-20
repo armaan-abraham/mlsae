@@ -9,7 +9,7 @@ from mlsae.data import DTYPES
 
 model_dir = Path(__file__).parent / "checkpoints"
 
-ZERO_ACT_THRESHOLD = 1e-6
+ZERO_ACT_THRESHOLD = 0
 
 class DeepSAE(nn.Module):
     """
