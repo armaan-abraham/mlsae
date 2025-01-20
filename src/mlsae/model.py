@@ -180,62 +180,30 @@ class DeepSAE(nn.Module):
                 w.grad -= w_dec_grad_proj
             w.data = w_normed
 
-    def get_version(self, save_path: Path):
-        version_list = []
-        for file in save_path.glob("*.pt"):
-            try:
-                version_list.append(int(file.stem))
-            except ValueError:
-                pass
-        return max(version_list, default=-1) + 1
-
-    def save(self, architecture_name, version=None):
-        save_path = model_dir / architecture_name
-        save_path.mkdir(exist_ok=True, parents=True)
-
-        if version is None:
-            version = self.get_version(save_path)
-
-        torch.save(self.state_dict(), save_path / f"{version}.pt")
-
-        config_dict = {
-            "encoder_dims": self.encoder_dims,
-            "decoder_dims": self.decoder_dims,
-            "sparse_dim": self.sparse_dim,
-            "act_size": self.act_size,
-            "enc_dtype": self.enc_dtype,
-            "device": self.device,
-            "l1_lambda": self.l1_lambda,
-        }
-        with open(save_path / f"{version}_cfg.json", "w") as f:
-            json.dump(config_dict, f)
-
-        print(f"Saved version {version} for architecture {architecture_name}")
-
-    @classmethod
-    def load(cls, architecture_name, version):
-        load_path = model_dir / architecture_name
-        with open(load_path / f"{version}_cfg.json", "r") as f:
-            config_dict = json.load(f)
-        new_model = cls(
-            encoder_dim_mults=[
-                dim // config_dict["act_size"] for dim in config_dict["encoder_dims"]
-            ],
-            sparse_dim_mult=config_dict["sparse_dim"] // config_dict["act_size"],
-            decoder_dim_mults=[
-                dim // config_dict["act_size"] for dim in config_dict["decoder_dims"]
-            ],
-            act_size=config_dict["act_size"],
-            enc_dtype=config_dict["enc_dtype"],
-            device=config_dict["device"],
-            l1_lambda=config_dict["l1_lambda"],
+    def save(self, architecture_name, model_id=None, save_to_s3=False):
+        """
+        Wrapper that delegates to the save_model function in save.py
+        """
+        from mlsae.save import save_model
+        save_model(
+            model=self,
+            architecture_name=architecture_name,
+            model_id=model_id,
+            save_to_s3=save_to_s3,
         )
 
-        state_dict = torch.load(load_path / f"{version}.pt", map_location="cpu")
-        new_model.load_state_dict(state_dict)
-        new_model.to(new_model.dtype)
-
-        return new_model
+    @classmethod
+    def load(cls, architecture_name, model_id, load_from_s3=False):
+        """
+        Wrapper that delegates to the load_model function in save.py
+        """
+        from mlsae.save import load_model
+        return load_model(
+            cls=cls,
+            architecture_name=architecture_name,
+            model_id=model_id,
+            load_from_s3=load_from_s3,
+        )
 
     @torch.no_grad()
     def resample_sparse_features(self, idx):
