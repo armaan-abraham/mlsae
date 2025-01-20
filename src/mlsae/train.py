@@ -13,45 +13,145 @@ from mlsae.data import Buffer, data_cfg
 class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
+            # shallow
             {
                 "name": "0",
                 "encoder_dim_mults": [],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "l1_lambda": 1,
-                "weight_decay": 4e-4,
+                "weight_decay": 5e-4,
                 "lr": 4e-3,
-                "leaky_relu_slope": 0.05,
             },
             {
                 "name": "1",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 2,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "3",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 4,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "4",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 0.5,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "5",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 0.25,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+
+            # 1 encoder layer
+            {
+                "name": "6",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [],
                 "l1_lambda": 1,
                 "weight_decay": 5e-4,
                 "lr": 4e-3,
-                "leaky_relu_slope": 0.1,
             },
             {
-                "name": "2",
+                "name": "7",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 2,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "8",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 4,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "9",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 0.5,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "10",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [],
+                "l1_lambda": 0.25,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+
+            # 1 encoder layer, 1 decoder layer
+            {
+                "name": "11",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
                 "decoder_dim_mults": [1],
                 "l1_lambda": 1,
-                "weight_decay": 1e-4,
+                "weight_decay": 5e-4,
                 "lr": 4e-3,
-                "leaky_relu_slope": 0.1,
             },
             {
-                "name": "3",
+                "name": "12",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 1,
-                "weight_decay": 1e-4,
+                "decoder_dim_mults": [1],
+                "l1_lambda": 2,
+                "weight_decay": 5e-4,
                 "lr": 4e-3,
-                "leaky_relu_slope": 0.1,
+            },
+            {
+                "name": "13",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [1],
+                "l1_lambda": 4,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "14",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [1],
+                "l1_lambda": 0.5,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
+            },
+            {
+                "name": "15",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 2,
+                "decoder_dim_mults": [1],
+                "l1_lambda": 0.25,
+                "weight_decay": 5e-4,
+                "lr": 4e-3,
             },
         ]
     )
@@ -61,7 +161,7 @@ class TrainConfig:
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    n_epochs: int = 8
+    n_epochs: int = 4
 
     resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6
@@ -175,7 +275,6 @@ def main():
             encoder_dim_mults=arch_dict["encoder_dim_mults"],
             sparse_dim_mult=arch_dict["sparse_dim_mult"],
             decoder_dim_mults=arch_dict["decoder_dim_mults"],
-            leaky_relu_slope=arch_dict["leaky_relu_slope"],
             act_size=data_cfg.act_size,
             enc_dtype=data_cfg.enc_dtype,
             device=device_str,

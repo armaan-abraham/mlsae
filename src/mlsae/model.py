@@ -27,7 +27,6 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
         l1_lambda: float = 0.1,
-        leaky_relu_slope: float = 0.05
     ):
         super().__init__()
 
@@ -41,7 +40,6 @@ class DeepSAE(nn.Module):
         self.dtype = DTYPES[enc_dtype]
         self.device = device
         self.l1_lambda = l1_lambda
-        self.leaky_relu_slope = leaky_relu_slope
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
