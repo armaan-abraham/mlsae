@@ -12,7 +12,7 @@ df.loc[df["encoder_dim"].isna() & df["decoder_dim"].isna(), "Architecture"] = "S
 print(df)
 
 # %%
-plot = sns.lineplot(data=df, x="avg_nonzero_acts", y="avg_mse", hue="Architecture")
+plot = sns.lineplot(data=df, x="avg_nonzero_acts", y="avg_mse", hue="Architecture", marker="o")
 plot.set_xlabel("$L_0$")
 plot.set_ylabel("MSE")
 # add more y ticks
