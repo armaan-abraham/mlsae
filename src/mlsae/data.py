@@ -34,11 +34,12 @@ class DataConfig:
     dataset_name: str = "apollo-research/roneneldan-TinyStories-tokenizer-gpt2"
 
     eval_data_seed: int = 59
-    eval_tokens_buffer_batch_size_mult: int = 512
+    eval_batches: int = 500
 
     caching: bool = True
     # These are the fields that must match before reusing an existing cache
     cache_id_fields: list = field(default_factory=lambda: [
+        # TODO: eval data seed
         "seed",
         "model_name",
         "layer",
@@ -116,7 +117,7 @@ def get_relevant_config_subset(cfg: DataConfig) -> dict:
     return subset
 
 
-def find_existing_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
+def find_existing_cache_folder(cfg: DataConfig, base_cache_dir: Path, eval=False) -> Path:
     """
     Checks each subdirectory in base_cache_dir for a config.json that matches
     the relevant fields of cfg. Returns the path if found, else None.
@@ -129,12 +130,14 @@ def find_existing_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
         if config_path.exists():
             with open(config_path, "r") as f:
                 stored_cfg_subset = json.load(f)
-            if stored_cfg_subset == desired_subset:
-                return subdir
+            if stored_cfg_subset.get("eval", False) == eval:
+                stored_cfg_subset.pop("eval")
+                if stored_cfg_subset == desired_subset:
+                    return subdir
     return None
 
 
-def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
+def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path, eval=False) -> Path:
     """
     Creates a new UUID-based folder under base_cache_dir,
     writes config.json with relevant fields, and returns path.
@@ -143,6 +146,7 @@ def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path) -> Path:
     new_cache_folder.mkdir(parents=True, exist_ok=True)
 
     relevant_cfg = get_relevant_config_subset(cfg)
+    relevant_cfg["eval"] = eval
     with open(new_cache_folder / "config.json", "w") as f:
         json.dump(relevant_cfg, f, indent=2)
 
@@ -266,12 +270,12 @@ class Buffer:
         # Find or create cache folder if caching is enabled
         self.cache_path = None
         if data_cfg.caching:
-            existing_cache = find_existing_cache_folder(data_cfg, activations_dir)
+            existing_cache = find_existing_cache_folder(data_cfg, activations_dir, eval=eval)
             if existing_cache is not None:
                 print(f"Found existing cache: {existing_cache}")
                 self.cache_path = existing_cache
             else:
-                self.cache_path = create_new_cache_folder(data_cfg, activations_dir)
+                self.cache_path = create_new_cache_folder(data_cfg, activations_dir, eval=eval)
                 print(f"Created new cache folder: {self.cache_path}")
 
         self.pointer = 0

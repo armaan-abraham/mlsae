@@ -81,7 +81,7 @@ def save_model(
 def load_model(
     cls,
     architecture_name: str,
-    model_id: str,
+    model_id: str | None = None,
     load_from_s3: bool = False,
 ):
     """
@@ -109,6 +109,11 @@ def load_model(
             print(f"Client error downloading from S3: {e}")
         except Exception as e:
             print(f"Unexpected error downloading from S3: {e}")
+
+    # If no id supplied, assert only one model
+    if model_id is None:
+        assert len(list(load_path.glob("*.pt"))) == 1, "More than one model found in directory"
+        model_id = next(load_path.glob("*.pt")).stem
 
     # 2) Now load from local disk
     with open(load_path / f"{model_id}_cfg.json", "r") as f:

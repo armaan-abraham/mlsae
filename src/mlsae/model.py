@@ -191,7 +191,7 @@ class DeepSAE(nn.Module):
         )
 
     @classmethod
-    def load(cls, architecture_name, model_id, load_from_s3=False):
+    def load(cls, architecture_name, model_id=None, load_from_s3=False):
         """
         Wrapper that delegates to the load_model function in save.py
         """
@@ -216,3 +216,8 @@ class DeepSAE(nn.Module):
         self.encoder[-1].weight.data[idx] = new_W_enc[idx]
         self.encoder[-1].bias.data[idx] = new_b_enc[idx]
         self.decoder[0].weight.data[:, idx] = new_W_dec[:, idx]
+    
+    def to(self, *args, **kwargs):
+        super().to(*args, **kwargs)
+        self.device = self.sparse_layer.weight.device
+        self.dtype = self.sparse_layer.weight.dtype
