@@ -21,7 +21,7 @@ class DataConfig:
     buffer_batch_size_tokens: int = 65536
     buffer_size_buffer_batch_size_mult: int = 1024
     seq_len: int = 64
-    model_batch_size_seqs: int = 1024
+    model_batch_size_seqs: int = 512
     dataset_row_len: int = 512
     enc_dtype: str = "fp32"
     cache_dtype: str = "bf16"

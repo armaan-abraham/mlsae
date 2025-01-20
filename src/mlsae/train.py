@@ -165,6 +165,7 @@ class TrainConfig:
 
     resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6
+    store_models_on_cpu: bool = True # If too many models per GPU, you may get OOM
 
     log_every_n_batches: int = 10
 
@@ -182,6 +183,8 @@ def model_step(entry, acts, is_train=True):
     device = entry["device"]
     acts_local = acts.to(device, non_blocking=True) * 10
     autoenc = entry["model"]
+    if train_cfg.store_models_on_cpu:
+        autoenc.to(device)
     arch_name = entry["name"]
 
     if is_train:
@@ -268,7 +271,7 @@ def main():
 
     for arch_dict in train_cfg.architectures:
         device_id = idx % n_gpus
-        device_str = f"cuda:{device_id}"
+        device_str = "cpu" if train_cfg.store_models_on_cpu else f"cuda:{device_id}"
         idx += 1
 
         autoenc = DeepSAE(
