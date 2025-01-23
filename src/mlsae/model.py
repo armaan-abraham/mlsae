@@ -16,9 +16,12 @@ class DeepSAE(nn.Module):
     Multi-layer sparse autoencoder with a single sparse representation layer,
     where we replace L1 regularization with a top-k activation mask.
 
-    If track_acts_stats=True, we accumulate the sum of feature activations,
-    the sum of their squares, and the total element count across all forward() calls.
-    These can then be used to compute the overall mean and std via get_activation_stats().
+    Statistics for the feature activations can be tracked only after calling
+    the start_act_stat_tracking() method. If that method is called, we accumulate
+    the sum of feature activations, the sum of their squares, and the total element
+    count across all forward() calls. We also track the running sum of MSE losses
+    over calls to forward(). These can then be used to compute the overall mean,
+    std, and mean MSE via get_activation_stats().
     """
 
     def __init__(
@@ -31,7 +34,6 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
         l1_lambda: float = 0.1,
-        track_acts_stats: bool = False,
     ):
         super().__init__()
 
@@ -54,13 +56,13 @@ class DeepSAE(nn.Module):
         self.acts_sq_sum = 0.0
         self.acts_elem_count = 0
 
+
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
         print(f"L1 lambda: {self.l1_lambda}")
         print(f"Device: {self.device}")
         print(f"Dtype: {self.dtype}")
-        print(f"Track Activation Stats: {self.track_acts_stats}")
 
         # Parameter groups for L2: stored in class-level lists
         self.params_with_decay = []
@@ -88,7 +90,6 @@ class DeepSAE(nn.Module):
         self.sparse_layer = self._create_linear_layer(
             in_dim, self.sparse_dim, apply_weight_decay=False
         )
-
 
         # --------------------------------------------------------
         # Build decoder
@@ -119,13 +120,15 @@ class DeepSAE(nn.Module):
 
     def start_act_stat_tracking(self):
         """
-        Turns on tracking for feature activations. If invoked multiple times,
+        Turns on tracking for feature activations and MSE. If invoked multiple times,
         previously accumulated statistics are reset.
         """
         self.track_acts_stats = True
         self.acts_sum = 0.0
         self.acts_sq_sum = 0.0
         self.acts_elem_count = 0
+        self.mse_sum = 0.0
+        self.mse_count = 0
 
     def _create_linear_layer(self, in_dim, out_dim, apply_weight_decay: bool):
         """
@@ -177,14 +180,6 @@ class DeepSAE(nn.Module):
 
         feature_acts = F.relu(self.sparse_layer(resid))
 
-        # Optionally track stats
-        if self.track_acts_stats:
-            # Convert to float for safer accumulation
-            fa_float = feature_acts.float()
-            self.acts_sum += fa_float.sum().item()
-            self.acts_sq_sum += (fa_float ** 2).sum().item()
-            self.acts_elem_count += fa_float.numel()
-
         # Decode
         reconstructed = self.decoder(feature_acts)
 
@@ -198,21 +193,32 @@ class DeepSAE(nn.Module):
         # Number of nonzero activations (for monitoring)
         nonzero_acts = (feature_acts > ZERO_ACT_THRESHOLD).float().sum(dim=1).mean()
 
+        # Optionally track activation stats and MSE
+        if self.track_acts_stats:
+            fa_float = feature_acts.float()
+            self.acts_sum += fa_float.sum().item()
+            self.acts_sq_sum += (fa_float ** 2).sum().item()
+            self.acts_elem_count += fa_float.numel()
+
+            self.mse_sum += mse_loss.item()
+            self.mse_count += 1
+
         return loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed
 
     def get_activation_stats(self):
         """
         Returns the overall mean and std of the feature activations
-        across all forward() calls, if tracking is active.
+        and the average MSE across all forward() calls, if tracking is active.
         Returns None if no data has been accumulated or tracking is off.
         """
-        if not self.track_acts_stats or self.acts_elem_count == 0:
+        if not self.track_acts_stats or self.acts_elem_count == 0 or self.mse_count == 0:
             return None
 
         mean = self.acts_sum / self.acts_elem_count
         var = (self.acts_sq_sum / self.acts_elem_count) - (mean ** 2)
         std = var**0.5 if var > 0 else 0.0
-        return mean, std
+        avg_mse = self.mse_sum / self.mse_count
+        return mean, std, avg_mse
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
