@@ -45,7 +45,9 @@ class DeepSAE(nn.Module):
         self.dtype = DTYPES[enc_dtype]
         self.device = device
         self.l1_lambda = l1_lambda
-        self.track_acts_stats = track_acts_stats
+
+        # Indicates whether we're tracking global stats of feature activations
+        self.track_acts_stats = False
 
         # For tracking global stats of feature activations if enabled
         self.acts_sum = 0.0
@@ -114,6 +116,16 @@ class DeepSAE(nn.Module):
         # Initialize weights, move to device/dtype
         self.init_weights()
         self.to(self.device, self.dtype)
+
+    def start_act_stat_tracking(self):
+        """
+        Turns on tracking for feature activations. If invoked multiple times,
+        previously accumulated statistics are reset.
+        """
+        self.track_acts_stats = True
+        self.acts_sum = 0.0
+        self.acts_sq_sum = 0.0
+        self.acts_elem_count = 0
 
     def _create_linear_layer(self, in_dim, out_dim, apply_weight_decay: bool):
         """
@@ -190,12 +202,11 @@ class DeepSAE(nn.Module):
 
     def get_activation_stats(self):
         """
-        If track_acts_stats=True, returns the overall mean and std of
-        the feature activations across all forward() calls up to now.
-
-        Returns (mean, std), or None if no data has been accumulated.
+        Returns the overall mean and std of the feature activations
+        across all forward() calls, if tracking is active.
+        Returns None if no data has been accumulated or tracking is off.
         """
-        if self.acts_elem_count == 0:
+        if not self.track_acts_stats or self.acts_elem_count == 0:
             return None
 
         mean = self.acts_sum / self.acts_elem_count
