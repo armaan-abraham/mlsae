@@ -15,6 +15,10 @@ class DeepSAE(nn.Module):
     """
     Multi-layer sparse autoencoder with a single sparse representation layer,
     where we replace L1 regularization with a top-k activation mask.
+
+    If track_acts_stats=True, we accumulate the sum of feature activations,
+    the sum of their squares, and the total element count across all forward() calls.
+    These can then be used to compute the overall mean and std via get_activation_stats().
     """
 
     def __init__(
@@ -27,6 +31,7 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
         l1_lambda: float = 0.1,
+        track_acts_stats: bool = False,
     ):
         super().__init__()
 
@@ -40,12 +45,20 @@ class DeepSAE(nn.Module):
         self.dtype = DTYPES[enc_dtype]
         self.device = device
         self.l1_lambda = l1_lambda
+        self.track_acts_stats = track_acts_stats
+
+        # For tracking global stats of feature activations if enabled
+        self.acts_sum = 0.0
+        self.acts_sq_sum = 0.0
+        self.acts_elem_count = 0
+
         print(f"Encoder dims: {self.encoder_dims}")
         print(f"Decoder dims: {self.decoder_dims}")
         print(f"Sparse dim: {self.sparse_dim}")
         print(f"L1 lambda: {self.l1_lambda}")
         print(f"Device: {self.device}")
         print(f"Dtype: {self.dtype}")
+        print(f"Track Activation Stats: {self.track_acts_stats}")
 
         # Parameter groups for L2: stored in class-level lists
         self.params_with_decay = []
@@ -152,6 +165,14 @@ class DeepSAE(nn.Module):
 
         feature_acts = F.relu(self.sparse_layer(resid))
 
+        # Optionally track stats
+        if self.track_acts_stats:
+            # Convert to float for safer accumulation
+            fa_float = feature_acts.float()
+            self.acts_sum += fa_float.sum().item()
+            self.acts_sq_sum += (fa_float ** 2).sum().item()
+            self.acts_elem_count += fa_float.numel()
+
         # Decode
         reconstructed = self.decoder(feature_acts)
 
@@ -166,6 +187,21 @@ class DeepSAE(nn.Module):
         nonzero_acts = (feature_acts > ZERO_ACT_THRESHOLD).float().sum(dim=1).mean()
 
         return loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed
+
+    def get_activation_stats(self):
+        """
+        If track_acts_stats=True, returns the overall mean and std of
+        the feature activations across all forward() calls up to now.
+
+        Returns (mean, std), or None if no data has been accumulated.
+        """
+        if self.acts_elem_count == 0:
+            return None
+
+        mean = self.acts_sum / self.acts_elem_count
+        var = (self.acts_sq_sum / self.acts_elem_count) - (mean ** 2)
+        std = var**0.5 if var > 0 else 0.0
+        return mean, std
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
