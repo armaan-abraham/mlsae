@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import torch
@@ -10,6 +11,7 @@ from mlsae.data import DTYPES
 model_dir = Path(__file__).parent / "checkpoints"
 
 ZERO_ACT_THRESHOLD = 0
+
 
 class DeepSAE(nn.Module):
     """
@@ -56,13 +58,12 @@ class DeepSAE(nn.Module):
         self.acts_sq_sum = 0.0
         self.acts_elem_count = 0
 
-
-        print(f"Encoder dims: {self.encoder_dims}")
-        print(f"Decoder dims: {self.decoder_dims}")
-        print(f"Sparse dim: {self.sparse_dim}")
-        print(f"L1 lambda: {self.l1_lambda}")
-        print(f"Device: {self.device}")
-        print(f"Dtype: {self.dtype}")
+        logging.info(f"Encoder dims: {self.encoder_dims}")
+        logging.info(f"Decoder dims: {self.decoder_dims}")
+        logging.info(f"Sparse dim: {self.sparse_dim}")
+        logging.info(f"L1 lambda: {self.l1_lambda}")
+        logging.info(f"Device: {self.device}")
+        logging.info(f"Dtype: {self.dtype}")
 
         # Parameter groups for L2: stored in class-level lists
         self.params_with_decay = []
@@ -185,7 +186,7 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        
+
         # L1 penalty on feature activations
         l1_loss = self.l1_lambda * feature_acts.abs().mean()
         loss = mse_loss + l1_loss
@@ -197,7 +198,7 @@ class DeepSAE(nn.Module):
         if self.track_acts_stats:
             fa_float = feature_acts.float()
             self.acts_sum += fa_float.sum().item()
-            self.acts_sq_sum += (fa_float ** 2).sum().item()
+            self.acts_sq_sum += (fa_float**2).sum().item()
             self.acts_elem_count += fa_float.numel()
 
             self.mse_sum += mse_loss.item()
@@ -211,11 +212,15 @@ class DeepSAE(nn.Module):
         and the average MSE across all forward() calls, if tracking is active.
         Returns None if no data has been accumulated or tracking is off.
         """
-        if not self.track_acts_stats or self.acts_elem_count == 0 or self.mse_count == 0:
+        if (
+            not self.track_acts_stats
+            or self.acts_elem_count == 0
+            or self.mse_count == 0
+        ):
             return None
 
         mean = self.acts_sum / self.acts_elem_count
-        var = (self.acts_sq_sum / self.acts_elem_count) - (mean ** 2)
+        var = (self.acts_sq_sum / self.acts_elem_count) - (mean**2)
         std = var**0.5 if var > 0 else 0.0
         avg_mse = self.mse_sum / self.mse_count
         return mean, std, avg_mse
@@ -236,6 +241,7 @@ class DeepSAE(nn.Module):
         Wrapper that delegates to the save_model function in save.py
         """
         from mlsae.save import save_model
+
         save_model(
             model=self,
             architecture_name=architecture_name,
@@ -249,6 +255,7 @@ class DeepSAE(nn.Module):
         Wrapper that delegates to the load_model function in save.py
         """
         from mlsae.save import load_model
+
         return load_model(
             cls=cls,
             architecture_name=architecture_name,
@@ -258,7 +265,7 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def resample_sparse_features(self, idx):
-        print("Resampling sparse features...")
+        logging.info("Resampling sparse features...")
         new_W_enc = torch.zeros_like(self.encoder[-1].weight)
         new_W_dec = torch.zeros_like(self.decoder[0].weight)
         nn.init.kaiming_normal_(new_W_enc, nonlinearity="relu")
@@ -269,7 +276,7 @@ class DeepSAE(nn.Module):
         self.encoder[-1].weight.data[idx] = new_W_enc[idx]
         self.encoder[-1].bias.data[idx] = new_b_enc[idx]
         self.decoder[0].weight.data[:, idx] = new_W_dec[:, idx]
-    
+
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)
         self.device = self.sparse_layer.weight.device

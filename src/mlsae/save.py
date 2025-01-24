@@ -1,10 +1,10 @@
 import json
-import torch
-import petname
 from pathlib import Path
 
 import boto3
-from botocore.exceptions import NoCredentialsError, ClientError
+import petname
+import torch
+from botocore.exceptions import ClientError, NoCredentialsError
 
 from mlsae.data import DTYPES
 
@@ -14,12 +14,14 @@ S3_PREFIX = "models"
 # If your original model_dir is in model.py, either re-import or replicate it here:
 model_dir = Path(__file__).parent / "checkpoints"
 
+
 def get_pet_name() -> str:
     """
     Generates a random "pet" name, e.g. 'lively-spaniel', using the petname library.
     """
     # petname.generate() produces a random name like "fragrant-emu" by default
     return petname.generate(words=3)
+
 
 def save_model(
     model,
@@ -60,14 +62,24 @@ def save_model(
         pt_local_path = str(save_path / f"{model_id}.pt")
         cfg_local_path = str(save_path / f"{model_id}_cfg.json")
 
-        key_pt = f"{S3_PREFIX}/{architecture_name}/{model_id}.pt" if S3_PREFIX else f"{architecture_name}/{model_id}.pt"
-        key_cfg = f"{S3_PREFIX}/{architecture_name}/{model_id}_cfg.json" if S3_PREFIX else f"{architecture_name}/{model_id}_cfg.json"
+        key_pt = (
+            f"{S3_PREFIX}/{architecture_name}/{model_id}.pt"
+            if S3_PREFIX
+            else f"{architecture_name}/{model_id}.pt"
+        )
+        key_cfg = (
+            f"{S3_PREFIX}/{architecture_name}/{model_id}_cfg.json"
+            if S3_PREFIX
+            else f"{architecture_name}/{model_id}_cfg.json"
+        )
 
-        s3_client = boto3.client('s3')
+        s3_client = boto3.client("s3")
         try:
             s3_client.upload_file(pt_local_path, S3_BUCKET, key_pt)
             s3_client.upload_file(cfg_local_path, S3_BUCKET, key_cfg)
-            print(f"Uploaded '{model_id}' of {architecture_name} to S3 bucket '{S3_BUCKET}'.")
+            print(
+                f"Uploaded '{model_id}' of {architecture_name} to S3 bucket '{S3_BUCKET}'."
+            )
         except NoCredentialsError as e:
             print("No AWS credentials found. Could not upload to S3.")
             raise e
@@ -77,6 +89,7 @@ def save_model(
         except Exception as e:
             print(f"Unexpected error uploading to S3: {e}")
             raise e
+
 
 def load_model(
     cls,
@@ -95,14 +108,24 @@ def load_model(
         pt_local_path = str(load_path / f"{model_id}.pt")
         cfg_local_path = str(load_path / f"{model_id}_cfg.json")
 
-        key_pt = f"{S3_PREFIX}/{architecture_name}/{model_id}.pt" if S3_PREFIX else f"{architecture_name}/{model_id}.pt"
-        key_cfg = f"{S3_PREFIX}/{architecture_name}/{model_id}_cfg.json" if S3_PREFIX else f"{architecture_name}/{model_id}_cfg.json"
+        key_pt = (
+            f"{S3_PREFIX}/{architecture_name}/{model_id}.pt"
+            if S3_PREFIX
+            else f"{architecture_name}/{model_id}.pt"
+        )
+        key_cfg = (
+            f"{S3_PREFIX}/{architecture_name}/{model_id}_cfg.json"
+            if S3_PREFIX
+            else f"{architecture_name}/{model_id}_cfg.json"
+        )
 
-        s3_client = boto3.client('s3')
+        s3_client = boto3.client("s3")
         try:
             s3_client.download_file(S3_BUCKET, key_pt, pt_local_path)
             s3_client.download_file(S3_BUCKET, key_cfg, cfg_local_path)
-            print(f"Downloaded '{model_id}' of {architecture_name} from S3 bucket '{S3_BUCKET}'.")
+            print(
+                f"Downloaded '{model_id}' of {architecture_name} from S3 bucket '{S3_BUCKET}'."
+            )
         except NoCredentialsError:
             print("No AWS credentials found. Could not download from S3.")
         except ClientError as e:
@@ -112,7 +135,9 @@ def load_model(
 
     # If no id supplied, assert only one model
     if model_id is None:
-        assert len(list(load_path.glob("*.pt"))) == 1, "More than one model found in directory"
+        assert (
+            len(list(load_path.glob("*.pt"))) == 1
+        ), "More than one model found in directory"
         model_id = next(load_path.glob("*.pt")).stem
 
     # 2) Now load from local disk
@@ -138,5 +163,7 @@ def load_model(
     new_model.load_state_dict(state_dict)
     new_model.to(new_model.dtype)
 
-    print(f"Loaded model '{model_id}' for architecture '{architecture_name}' from disk.")
+    print(
+        f"Loaded model '{model_id}' for architecture '{architecture_name}' from disk."
+    )
     return new_model

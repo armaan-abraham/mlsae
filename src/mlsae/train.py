@@ -1,12 +1,19 @@
 import concurrent.futures
+import logging
 from dataclasses import dataclass, field
 
 import torch
 import tqdm
 import wandb
 
-from mlsae.model import DeepSAE, ZERO_ACT_THRESHOLD
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 from mlsae.data import Buffer, data_cfg
+from mlsae.model import ZERO_ACT_THRESHOLD, DeepSAE
 
 
 @dataclass
@@ -59,7 +66,6 @@ class TrainConfig:
                 "weight_decay": 5e-4,
                 "lr": 4e-3,
             },
-
             # 1 encoder layer
             {
                 "name": "6",
@@ -106,7 +112,6 @@ class TrainConfig:
                 "weight_decay": 5e-4,
                 "lr": 4e-3,
             },
-
             # 1 encoder layer, 1 decoder layer
             {
                 "name": "11",
@@ -156,16 +161,15 @@ class TrainConfig:
         ]
     )
 
-    num_tokens: int = int(4e8)
+    num_tokens: int = int(2e9)
     beta1: float = 0.9
     beta2: float = 0.99
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    n_epochs: int = 4
+    n_epochs: int = 1
 
     resample_dead_every_n_batches: int = int(1e9)
     measure_freq_over_n_batches: int = 6
-    store_models_on_cpu: bool = True # If too many models per GPU, you may get OOM
 
     log_every_n_batches: int = 10
 
@@ -181,23 +185,24 @@ def model_step(entry, acts, is_train=True):
     Now uses L1 penalty for sparsity.
     """
     device = entry["device"]
-    acts_local = acts.to(device, non_blocking=True) * 10
+    acts_local = acts.to(device, non_blocking=True)
     autoenc = entry["model"]
-    if train_cfg.store_models_on_cpu:
-        autoenc.to(device)
     arch_name = entry["name"]
 
     if is_train:
         optimizer = entry["optimizer"]
-        loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
+        loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(
+            acts_local
+        )
         loss.backward()
         autoenc.make_decoder_weights_and_grad_unit_norm()
         optimizer.step()
         optimizer.zero_grad()
     else:
         with torch.no_grad():
-            loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = autoenc(acts_local)
-
+            loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed = (
+                autoenc(acts_local)
+            )
 
     return {
         "loss": loss.item(),
@@ -246,32 +251,34 @@ def measure_and_resample_dead_features(
         activation_counts = activation_counts_list[i]
         dead_features = (activation_counts == 0).nonzero().flatten()
         if len(dead_features) > 0:
-            print(f"Resampling {len(dead_features)} dead features for {entry['name']}")
+            logging.info(
+                f"Resampling {len(dead_features)} dead features for {entry['name']}"
+            )
             autoenc.resample_sparse_features(dead_features)
 
 
 def main():
-    print("Starting training...")
+    logging.info("Starting training...")
     for k, v in data_cfg.__dict__.items():
-        print(f"{k}: {v}")
+        logging.info(f"{k}: {v}")
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
     wandb.run.name = "multi_sae_single_buffer_topk"
 
     wandb.config.update(train_cfg)
     wandb.config.update(data_cfg)
-    print(wandb.config)
+    logging.info(wandb.config)
 
-    print("Building buffer...")
+    logging.info("Building buffer...")
     buffer = Buffer()
 
-    print("Building SAEs...")
+    logging.info("Building SAEs...")
     n_gpus = torch.cuda.device_count()
     autoencoders = []
     idx = 0
 
     for arch_dict in train_cfg.architectures:
         device_id = idx % n_gpus
-        device_str = "cpu" if train_cfg.store_models_on_cpu else f"cuda:{device_id}"
+        device_str = f"cuda:{device_id}"
         idx += 1
 
         autoenc = DeepSAE(
@@ -280,7 +287,7 @@ def main():
             decoder_dim_mults=arch_dict["decoder_dim_mults"],
             act_size=data_cfg.act_size,
             enc_dtype=data_cfg.enc_dtype,
-            device=device_str,
+            device="cpu",
             l1_lambda=arch_dict["l1_lambda"],
             name=arch_dict["name"],
         )
@@ -291,7 +298,7 @@ def main():
 
         # Initialize a local activation count tensor (one entry per feature in sparse_dim)
         local_activation_counts = torch.zeros(
-            autoenc.sparse_dim, device=device_str, dtype=torch.long
+            autoenc.sparse_dim, device="cpu", dtype=torch.long
         )
 
         autoencoders.append(
@@ -305,15 +312,25 @@ def main():
         )
 
     total_steps = train_cfg.num_tokens // data_cfg.buffer_batch_size_tokens
-    print("Training all SAEs...")
+    logging.info("Training all SAEs...")
 
     # We'll use a ThreadPoolExecutor for both training and dead-feature measurement
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=torch.cuda.device_count())
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=torch.cuda.device_count()
+    )
 
     try:
         for epoch in range(train_cfg.n_epochs):
             for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
+                for entry in autoencoders:
+                    entry["model"].to("cpu")
+                    entry["local_activation_counts"].to("cpu")
+
                 acts = buffer.next()
+
+                for entry in autoencoders:
+                    entry["model"].to(entry["device"])
+                    entry["local_activation_counts"].to(entry["device"])
 
                 # Training step (in parallel for each autoencoder)
                 futures = []
@@ -330,14 +347,18 @@ def main():
                     # Log periodically
                     if (step_idx + 1) % train_cfg.log_every_n_batches == 0:
                         # Count how many features never activated in this log interval
-                        dead_features_count = (entry["local_activation_counts"] == 0).sum().item()
-                        wandb.log({
-                            f"{entry['name']}_dead_features": dead_features_count,
-                            f"{entry['name']}_loss": result["loss"],
-                            f"{entry['name']}_loss_mse": result["mse_loss"],
-                            f"{entry['name']}_loss_l1": result["l1_loss"],
-                            f"{entry['name']}_nonzero_acts": result["nonzero_acts"],
-                        })
+                        dead_features_count = (
+                            (entry["local_activation_counts"] == 0).sum().item()
+                        )
+                        wandb.log(
+                            {
+                                f"{entry['name']}_dead_features": dead_features_count,
+                                f"{entry['name']}_loss": result["loss"],
+                                f"{entry['name']}_loss_mse": result["mse_loss"],
+                                f"{entry['name']}_loss_l1": result["l1_loss"],
+                                f"{entry['name']}_nonzero_acts": result["nonzero_acts"],
+                            }
+                        )
 
                         # Reset counts for next interval
                         entry["local_activation_counts"].zero_()
@@ -356,13 +377,13 @@ def main():
             buffer.chunk_index = 0
 
     finally:
-        print("Saving all SAEs...")
+        logging.info("Saving all SAEs...")
         for entry in autoencoders:
             arch_name = entry["name"]
             try:
                 entry["model"].save(arch_name, save_to_s3=train_cfg.save_to_s3)
             except Exception as e:
-                print(f"Error saving model {arch_name}: {e}")
+                logging.error(f"Error saving model {arch_name}: {e}")
         wandb.finish()
 
 

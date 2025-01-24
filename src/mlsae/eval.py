@@ -8,15 +8,15 @@ import pandas as pd
 import torch
 import tqdm
 
-import mlsae.model
 import mlsae.data
+import mlsae.model
 
 importlib.reload(mlsae.model)
 importlib.reload(mlsae.data)
 from pathlib import Path
 
-from mlsae.model import DeepSAE
 from mlsae.data import Buffer, data_cfg
+from mlsae.model import DeepSAE
 
 # Load gpt2 model
 
@@ -40,7 +40,9 @@ if __name__ == "__main__":
 
     results = []
     arch_name = "9"
-    autoenc = DeepSAE.load(arch_name, load_from_s3=True, model_id="safely-bright-kit").eval()
+    autoenc = DeepSAE.load(
+        arch_name, load_from_s3=True, model_id="safely-bright-kit"
+    ).eval()
     autoenc.start_act_stat_tracking()
     autoenc.to("cuda")
     autoenc.eval()
@@ -83,4 +85,3 @@ if __name__ == "__main__":
     df = pd.DataFrame(results)
     df.to_csv(output_csv, index=False)
     print(f"Saved evaluation results to {output_csv}")
-
