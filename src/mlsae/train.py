@@ -24,140 +24,20 @@ class TrainConfig:
             {
                 "name": "0",
                 "encoder_dim_mults": [],
-                "sparse_dim_mult": 2,
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
-                "l1_lambda": 1,
-                "weight_decay": 5e-4,
+                "l1_lambda": 0.25,
                 "lr": 4e-3,
             },
             {
                 "name": "1",
-                "encoder_dim_mults": [],
-                "sparse_dim_mult": 2,
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
-                "l1_lambda": 2,
                 "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "3",
-                "encoder_dim_mults": [],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 4,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "4",
-                "encoder_dim_mults": [],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 0.5,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "5",
-                "encoder_dim_mults": [],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
                 "l1_lambda": 0.25,
-                "weight_decay": 5e-4,
                 "lr": 4e-3,
-            },
-            # 1 encoder layer
-            {
-                "name": "6",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 1,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "7",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 2,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "8",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 4,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "9",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 0.5,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "10",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [],
-                "l1_lambda": 0.25,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            # 1 encoder layer, 1 decoder layer
-            {
-                "name": "11",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [1],
-                "l1_lambda": 1,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "12",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [1],
-                "l1_lambda": 2,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "13",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [1],
-                "l1_lambda": 4,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "14",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [1],
-                "l1_lambda": 0.5,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
-            {
-                "name": "15",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 2,
-                "decoder_dim_mults": [1],
-                "l1_lambda": 0.25,
-                "weight_decay": 5e-4,
-                "lr": 4e-3,
-            },
+            }
         ]
     )
 
@@ -168,7 +48,7 @@ class TrainConfig:
     wandb_entity: str = "armaanabraham-independent"
     n_epochs: int = 1
 
-    resample_dead_every_n_batches: int = int(1e9)
+    resample_dead_every_n_batches: int = int(2000)
     measure_freq_over_n_batches: int = 6
 
     log_every_n_batches: int = 10
@@ -321,6 +201,7 @@ def main():
 
     try:
         for epoch in range(train_cfg.n_epochs):
+            logging.info(f"Training for {total_steps} steps")
             for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
                 for entry in autoencoders:
                     entry["model"].to("cpu")

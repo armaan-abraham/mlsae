@@ -268,8 +268,8 @@ class DeepSAE(nn.Module):
         logging.info("Resampling sparse features...")
         new_W_enc = torch.zeros_like(self.encoder[-1].weight)
         new_W_dec = torch.zeros_like(self.decoder[0].weight)
-        nn.init.kaiming_normal_(new_W_enc, nonlinearity="relu")
-        nn.init.kaiming_normal_(new_W_dec, nonlinearity="relu")
+        nn.init.kaiming_normal_(new_W_enc)
+        nn.init.kaiming_normal_(new_W_dec)
 
         new_b_enc = torch.zeros_like(self.encoder[-1].bias)
 
