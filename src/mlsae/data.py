@@ -23,7 +23,7 @@ this_dir = Path(__file__).parent
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 65536
-    buffer_size_buffer_batch_size_mult: int = 64
+    buffer_size_buffer_batch_size_mult: int = 256
     seq_len: int = 128
     model_batch_size_seqs: int = 256
     enc_dtype: str = "fp32"

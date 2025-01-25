@@ -39,11 +39,12 @@ class DeepSAE(nn.Module):
     ):
         super().__init__()
 
-        assert all(mult == 1 for mult in encoder_dim_mults)
+        assert encoder_dim_mults[-1] == 1
+        assert decoder_dim_mults[0] == 1
         self.name = name
-        self.encoder_dims = [dim * act_size for dim in encoder_dim_mults]
-        self.decoder_dims = [dim * act_size for dim in decoder_dim_mults]
-        self.sparse_dim = sparse_dim_mult * act_size
+        self.encoder_dims = [int(dim * act_size) for dim in encoder_dim_mults]
+        self.decoder_dims = [int(dim * act_size) for dim in decoder_dim_mults]
+        self.sparse_dim = int(sparse_dim_mult * act_size)
         self.act_size = act_size
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]

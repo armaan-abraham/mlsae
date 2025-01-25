@@ -40,6 +40,24 @@ class TrainConfig:
                 "l1_lambda": 0.25,
                 "lr": 4e-3,
             },
+            {
+                "name": "2",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 8,
+                "decoder_dim_mults": [1],
+                "weight_decay": 5e-4,
+                "l1_lambda": 0.25,
+                "lr": 4e-3,
+            },
+            {
+                "name": "3",
+                "encoder_dim_mults": [2, 1],
+                "sparse_dim_mult": 8,
+                "decoder_dim_mults": [1, 2],
+                "weight_decay": 5e-4,
+                "l1_lambda": 0.25,
+                "lr": 4e-3,
+            }
         ]
     )
 
