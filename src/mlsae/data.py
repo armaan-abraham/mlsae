@@ -16,12 +16,11 @@ from datasets import load_dataset
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
-from mlsae.config import DataConfig, data_cfg
+from mlsae.config import DataConfig, data_cfg, DTYPES
 from mlsae.worker import TaskType
 
 this_dir = Path(__file__).parent
 
-DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 DEVICE_COUNT = torch.cuda.device_count()
 

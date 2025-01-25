@@ -1,13 +1,13 @@
 from dataclasses import dataclass, field
 
 import transformer_lens
-
+import torch
 
 @dataclass
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 65536
-    buffer_size_buffer_batch_size_mult: int = 128
+    buffer_size_buffer_batch_size_mult: int = 16
     seq_len: int = 128
     model_batch_size_seqs: int = 256
     enc_dtype: str = "fp32"
@@ -63,7 +63,7 @@ class TrainConfig:
                 "decoder_dim_mults": [],
                 "weight_decay": 5e-4,
                 "l1_lambda": 0.25,
-                "lr": 4e-3,
+                "lr": 4e-4,
             },
             {
                 "name": "1",
@@ -72,7 +72,7 @@ class TrainConfig:
                 "decoder_dim_mults": [],
                 "weight_decay": 5e-4,
                 "l1_lambda": 0.25,
-                "lr": 4e-3,
+                "lr": 4e-4,
             },
             {
                 "name": "2",
@@ -81,16 +81,16 @@ class TrainConfig:
                 "decoder_dim_mults": [1],
                 "weight_decay": 5e-4,
                 "l1_lambda": 0.25,
-                "lr": 4e-3,
+                "lr": 2e-4,
             },
             {
                 "name": "3",
                 "encoder_dim_mults": [1.5, 1],
                 "sparse_dim_mult": 8,
-                "decoder_dim_mults": [1, 1.5],
+                "decoder_dim_mults": [1, 1],
                 "weight_decay": 5e-4,
                 "l1_lambda": 0.25,
-                "lr": 4e-3,
+                "lr": 1e-4,
             },
         ]
     )
@@ -110,3 +110,5 @@ data_cfg = DataConfig()
 assert (
     train_cfg.resample_dead_every_n_batches % train_cfg.measure_dead_over_n_batches == 0
 )
+
+DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}

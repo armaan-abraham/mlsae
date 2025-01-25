@@ -4,8 +4,7 @@ import torch
 import torch.multiprocessing as mp
 import transformer_lens
 
-from mlsae.config import data_cfg, train_cfg
-from mlsae.data import DTYPES
+from mlsae.config import data_cfg, train_cfg, DTYPES
 
 
 class TaskType(enum.Enum):
@@ -112,7 +111,7 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
             "loss": step_res["loss"],
             "mse_loss": step_res["mse_loss"],
             "l1_loss": step_res["l1_loss"],
-            "act_freq": act_freq_batch.mean().item(),
+            "act_freq": act_freq_batch.sum().item(),
             "n_iter": model_entry["n_iter"],
         }
 

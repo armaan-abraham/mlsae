@@ -27,7 +27,7 @@ class DeepSAE(nn.Module):
         super().__init__()
 
         assert not encoder_dim_mults or encoder_dim_mults[-1] == 1
-        assert not decoder_dim_mults or decoder_dim_mults[0] == 1
+        assert not decoder_dim_mults or (decoder_dim_mults[0] == decoder_dim_mults[-1])
         self.name = name
         self.encoder_dims = [int(dim * act_size) for dim in encoder_dim_mults]
         self.decoder_dims = [int(dim * act_size) for dim in decoder_dim_mults]
@@ -60,46 +60,39 @@ class DeepSAE(nn.Module):
         # --------------------------------------------------------
         # Build encoder
         # --------------------------------------------------------
-        self.encoder_layers = torch.nn.ModuleList()
+        self.dense_encoder_blocks = torch.nn.ModuleList()
         in_dim = self.act_size
 
-        # Bulid the repeated (Linear -> ReLU -> LayerNorm) blocks
         for dim in self.encoder_dims:
             linear_layer = self._create_linear_layer(
                 in_dim, dim, apply_weight_decay=True
             )
-            self.encoder_layers.append(linear_layer)
-            self.encoder_layers.append(nn.Tanh())
-            self.encoder_layers.append(nn.LayerNorm(dim))
+            self.dense_encoder_blocks.append(torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim)))
             in_dim = dim
 
-        # Final encoder layer creates sparse representation
-        self.sparse_layer = self._create_linear_layer(
-            in_dim, self.sparse_dim, apply_weight_decay=False
+        self.sparse_encoder_block = torch.nn.Sequential(
+            self._create_linear_layer(
+                in_dim, self.sparse_dim, apply_weight_decay=False
+            ),
+            nn.ReLU(),
         )
 
         # --------------------------------------------------------
         # Build decoder
         # --------------------------------------------------------
-        decoder_layers = []
+        self.hidden_decoder_blocks = torch.nn.ModuleList()
         out_dim = self.sparse_dim
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
                 out_dim, dim, apply_weight_decay=True
             )
-            decoder_layers.append(linear_layer)
-            decoder_layers.append(nn.ReLU())
-            decoder_layers.append(nn.LayerNorm(dim))
+            self.hidden_decoder_blocks.append(torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim)))
             out_dim = dim
 
-        # Final decoder layer -> output
-        linear_out = self._create_linear_layer(
+        self.final_decoder_block = self._create_linear_layer(
             out_dim, self.act_size, apply_weight_decay=False
         )
-        decoder_layers.append(linear_out)
-
-        self.decoder = nn.Sequential(*decoder_layers)
 
         self.to(self.device, self.dtype)
 
@@ -150,15 +143,20 @@ class DeepSAE(nn.Module):
         # Encode
         if self.encoder_dims:
             resid = x
-            for layer in self.encoder_layers:
-                resid = layer(resid)
+            for block in self.dense_encoder_blocks:
+                resid = block(resid)
             resid += x
         else:
             resid = x
 
-        feature_acts = F.relu(self.sparse_layer(resid))
+        feature_acts = self.sparse_encoder_block(resid)
 
-        reconstructed = self.decoder(feature_acts)
+        resid = resid_pre = self.hidden_decoder_blocks[0](feature_acts)
+        for block in self.hidden_decoder_blocks[1:]:
+            resid = block(resid)
+        resid += resid_pre
+
+        reconstructed = self.final_decoder_block(resid)
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()

@@ -29,17 +29,15 @@ def main():
     wandb.config.update(data_cfg)
 
     # ===== Instantiate workers =====
+    mp.set_start_method("spawn", force=True)
 
     tasks_queue = mp.Queue()
     results_queue = mp.Queue()
     workers = []
-
-    mp.set_start_method("spawn", force=True)
-    workers = []
     for device_id in range(torch.cuda.device_count()):
         p = mp.Process(
             target=worker,
-            args=(device_id, train_cfg, data_cfg, tasks_queue, results_queue),
+            args=(device_id, tasks_queue, results_queue),
         )
         p.start()
         workers.append(p)
