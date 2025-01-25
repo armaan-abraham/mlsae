@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 import torch
 import tqdm
+
 import wandb
 
 logging.basicConfig(
@@ -26,6 +27,7 @@ class TrainConfig:
                 "encoder_dim_mults": [],
                 "sparse_dim_mult": 8,
                 "decoder_dim_mults": [],
+                "weight_decay": 5e-4,
                 "l1_lambda": 0.25,
                 "lr": 4e-3,
             },
@@ -37,7 +39,7 @@ class TrainConfig:
                 "weight_decay": 5e-4,
                 "l1_lambda": 0.25,
                 "lr": 4e-3,
-            }
+            },
         ]
     )
 
@@ -53,7 +55,7 @@ class TrainConfig:
 
     log_every_n_batches: int = 10
 
-    save_to_s3: bool = True
+    save_to_s3: bool = False
 
 
 train_cfg = TrainConfig()
@@ -203,15 +205,23 @@ def main():
         for epoch in range(train_cfg.n_epochs):
             logging.info(f"Training for {total_steps} steps")
             for step_idx in tqdm.trange(total_steps, desc="Training SAEs"):
-                for entry in autoencoders:
-                    entry["model"].to("cpu")
-                    entry["local_activation_counts"].to("cpu")
+                buffer_refresh = buffer.will_refresh()
+                if buffer_refresh:
+                    # Move models to CPU as the refresh needs the GPU memory
+                    for entry in autoencoders:
+                        entry["model"].to("cpu")
+                        entry["local_activation_counts"] = entry[
+                            "local_activation_counts"
+                        ].to("cpu")
 
                 acts = buffer.next()
 
-                for entry in autoencoders:
-                    entry["model"].to(entry["device"])
-                    entry["local_activation_counts"].to(entry["device"])
+                if buffer_refresh:
+                    for entry in autoencoders:
+                        entry["model"].to(entry["device"])
+                        entry["local_activation_counts"] = entry[
+                            "local_activation_counts"
+                        ].to(entry["device"])
 
                 # Training step (in parallel for each autoencoder)
                 futures = []

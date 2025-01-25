@@ -2,16 +2,18 @@ import json
 import logging
 import os
 import threading
-import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Dict, List
 
 import einops
+import numpy as np
 import torch
 import torch.multiprocessing as mp
 import transformer_lens
 from datasets import load_dataset
+from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
 this_dir = Path(__file__).parent
@@ -21,17 +23,18 @@ this_dir = Path(__file__).parent
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 65536
+    buffer_size_buffer_batch_size_mult: int = 64
     seq_len: int = 128
-    model_batch_size_seqs: int = 512
+    model_batch_size_seqs: int = 256
     enc_dtype: str = "fp32"
     cache_dtype: str = "bf16"
     model_name: str = "gpt2-small"
     site: str = "resid_pre"
     layer: int = 9
     act_size: int = 768
-    dataset_name: str = "Skylion007/openwebtext"
+    dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
-    dataset_batch_size: int = 2048
+    dataset_batch_size_entries: int = 50
 
     eval_data_seed: int = 59
     eval_batches: int = 500
@@ -49,9 +52,12 @@ class DataConfig:
             "act_size",
             "enc_dtype",
             "dataset_name",
-            "dataset_batch_size",
         ]
     )
+
+    @property
+    def buffer_size_tokens(self) -> int:
+        return self.buffer_batch_size_tokens * self.buffer_size_buffer_batch_size_mult
 
     @property
     def act_name(self) -> str:
@@ -83,7 +89,7 @@ for dir_path in [cache_dir, data_dir, model_dir, activations_dir]:
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
-tokenizer = AutoTokenizer.from_pretrained(data_cfg.model_name)
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
 
 def get_relevant_config_subset(cfg: DataConfig) -> dict:
@@ -173,10 +179,14 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int):
                     acts = acts.reshape(
                         acts.shape[0] * acts.shape[1], data_cfg.act_size
                     )
-                    all_acts.append(acts)
+                    all_acts.append(acts.to("cpu"))
 
-            results.put(torch.cat(all_acts, dim=0).to("cpu"))
+            results.put(torch.cat(all_acts, dim=0))
 
+            del acts
+            del all_acts
+            del cache
+            del seq_chunk
             local_model.to("cpu")
 
     except Exception as e:
@@ -184,20 +194,130 @@ def worker(tasks: mp.Queue, results: mp.Queue, device_id: int):
         raise
 
 
+def keep_single_column(dataset: Dataset, col_name: str):
+    """
+    Acts on a HuggingFace dataset to delete all columns apart from a single column name - useful when we want to tokenize and mix together different strings
+    """
+    for key in dataset.features:
+        if key != col_name:
+            dataset = dataset.remove_columns(key)
+    return dataset
+
+
+# This is a modified version of the tokenize_and_concatenate function from transformer_lens.utils
+def tokenize_and_concatenate(
+    dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    streaming: bool = False,
+    max_length: int = 1024,
+    column_name: str = "text",
+    add_bos_token: bool = True,
+    num_proc: int = 10,
+) -> Dataset:
+    """Helper function to tokenizer and concatenate a dataset of text. This converts the text to tokens, concatenates them (separated by EOS tokens) and then reshapes them into a 2D array of shape (____, sequence_length), dropping the last batch. Tokenizers are much faster if parallelised, so we chop the string into 20, feed it into the tokenizer, in parallel with padding, then remove padding at the end.
+
+    This tokenization is useful for training language models, as it allows us to efficiently train on a large corpus of text of varying lengths (without, eg, a lot of truncation or padding). Further, for models with absolute positional encodings, this avoids privileging early tokens (eg, news articles often begin with CNN, and models may learn to use early positional encodings to predict these)
+
+    Args:
+        dataset (Dataset): The dataset to tokenize, assumed to be a HuggingFace text dataset.
+        tokenizer (AutoTokenizer): The tokenizer. Assumed to have a bos_token_id and an eos_token_id.
+        streaming (bool, optional): Whether the dataset is being streamed. If True, avoids using parallelism. Defaults to False.
+        max_length (int, optional): The length of the context window of the sequence. Defaults to 1024.
+        column_name (str, optional): The name of the text column in the dataset. Defaults to 'text'.
+        add_bos_token (bool, optional): . Defaults to True.
+
+    Returns:
+        Dataset: Returns the tokenized dataset, as a dataset of tensors, with a single column called "tokens"
+    """
+    if tokenizer.pad_token is None:
+        # We add a padding token, purely to implement the tokenizer. This will be removed before inputting tokens to the model, so we do not need to increment d_vocab in the model.
+        tokenizer.add_special_tokens({"pad_token": "<PAD>"})
+    # Define the length to chop things up into - leaving space for a bos_token if required
+    if add_bos_token:
+        seq_len = max_length - 1
+    else:
+        seq_len = max_length
+
+    logging.info(f"Tokenize and concatenate called")
+
+    def tokenize_function(examples: Dict[str, List[str]]) -> Dict[str, np.ndarray]:
+        text = examples[column_name]
+        # Concatenate it all into an enormous string, separated by eos_tokens
+        full_text = tokenizer.eos_token.join(
+            [tokenizer.eos_token.join(sub_text) for sub_text in text]
+        )
+        logging.info(f"Full text length: {len(full_text)}")
+
+        # Handle the case when full_text is empty
+        if not full_text.strip():
+            return {"tokens": np.array([], dtype=np.int64)}
+
+        # Divide into 20 chunks of ~ equal length
+        num_chunks = 20
+        chunk_length = (len(full_text) - 1) // num_chunks + 1
+        chunks = [
+            full_text[i * chunk_length : (i + 1) * chunk_length]
+            for i in range(num_chunks)
+        ]
+        # Tokenize the chunks in parallel. Uses NumPy because HuggingFace map doesn't want tensors returned
+        tokens = tokenizer(chunks, return_tensors="np", padding=True)[
+            "input_ids"
+        ].flatten()
+        # Drop padding tokens
+        tokens = tokens[tokens != tokenizer.pad_token_id]
+        num_tokens = len(tokens)
+        logging.info(f"Num tokens: {num_tokens}")
+
+        # Handle cases where num_tokens is less than seq_len
+        if num_tokens < seq_len:
+            num_batches = 1
+            # Pad tokens if necessary
+            tokens = tokens[:seq_len]
+            if len(tokens) < seq_len:
+                padding_length = seq_len - len(tokens)
+                padding = np.full(padding_length, tokenizer.pad_token_id)
+                tokens = np.concatenate([tokens, padding], axis=0)
+        else:
+            num_batches = num_tokens // seq_len
+            # Drop the final tokens if not enough to make a full sequence
+            tokens = tokens[: seq_len * num_batches]
+
+        tokens = einops.rearrange(
+            tokens, "(batch seq) -> batch seq", batch=num_batches, seq=seq_len
+        )
+        if add_bos_token:
+            prefix = np.full((num_batches, 1), tokenizer.bos_token_id)
+            tokens = np.concatenate([prefix, tokens], axis=1)
+        return {"tokens": tokens}
+
+    kwargs = {
+        "batched": True,
+        "remove_columns": [column_name],
+    }
+    if not streaming:
+        kwargs["num_proc"] = num_proc
+
+    tokenized_dataset = dataset.map(
+        tokenize_function,
+        **kwargs,
+    )
+    return tokenized_dataset.with_format(type="torch")
+
+
 def stream_training_chunks(data_cfg, cache_dir, eval: bool = False):
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
+        "en",
         split="train",
         streaming=True,
         cache_dir=cache_dir,
+        trust_remote_code=True,
     )
-    dataset_iter = dataset_iter.shuffle(
-        buffer_size=data_cfg.dataset_batch_size,
-        seed=data_cfg.seed if not eval else data_cfg.eval_data_seed,
-    )
+    dataset_iter = keep_single_column(dataset_iter, data_cfg.dataset_column_name)
 
-    dataset_iter = dataset_iter.batch(data_cfg.dataset_batch_size)
-    dataset_iter = transformer_lens.utils.tokenize_and_concatenate(
+    dataset_iter = dataset_iter.batch(data_cfg.dataset_batch_size_entries)
+
+    dataset_iter = tokenize_and_concatenate(
         dataset_iter,
         tokenizer,
         streaming=True,
@@ -205,6 +325,8 @@ def stream_training_chunks(data_cfg, cache_dir, eval: bool = False):
         add_bos_token=True,
         column_name=data_cfg.dataset_column_name,
     )
+
+    dataset_iter = dataset_iter.batch(data_cfg.buffer_size_tokens // data_cfg.seq_len)
 
     for batch in dataset_iter:
         yield batch["tokens"].to(dtype=torch.int32, device="cpu")
@@ -225,7 +347,7 @@ class Buffer:
 
         self._init_act_gen_workers()
 
-        self._init_cache()
+        self._init_cache(eval=eval)
 
         self.pointer = 0
 
@@ -240,7 +362,7 @@ class Buffer:
         # Load the very first buffer content
         self.refresh()
 
-    def _init_cache(self):
+    def _init_cache(self, eval: bool = False):
         # Find or create cache folder if caching is enabled
         self.cache_path = None
         if data_cfg.caching:
@@ -270,7 +392,6 @@ class Buffer:
                     self.tasks,
                     self.results,
                     i,
-                    data_cfg.__dict__,
                 ),
             )
             p.start()
@@ -321,12 +442,15 @@ class Buffer:
 
         # We need to load the tokens regardless of caching, so if we get a cache
         # miss, our iter is up to date
+        logging.info("Loading tokens")
         tokens = next(self.token_stream)
+        logging.info(f"Loaded tokens of shape {tokens.shape}")
         assert tokens is not None, "No more data from token_stream."
         assert tokens.ndim == 2, f"Expected tokens to be 2D, got {tokens.ndim}D"
         assert (
             tokens.shape[1] == data_cfg.seq_len
         ), f"Expected tokens to have sequence length {data_cfg.seq_len}, got {tokens.shape[1]}"
+        assert (tokens[:, 0] == tokenizer.bos_token_id).all(), "First token is not BOS"
 
         # If we did not have prefetched data, do the usual load/generate
         if acts is None:
@@ -403,13 +527,17 @@ class Buffer:
         logging.info("Combining partial results...")
         return torch.cat(results, dim=0)
 
+    def will_refresh(self):
+        return (self.pointer + data_cfg.buffer_batch_size_tokens) > self.buffer.shape[0]
+
     @torch.no_grad()
     def next(self):
+        will_refresh = self.will_refresh()
         out = self.buffer[
             self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens
         ]
         self.pointer += data_cfg.buffer_batch_size_tokens
-        if self.pointer > self.buffer.shape[0]:
+        if will_refresh:
             self.refresh()
         return out
 

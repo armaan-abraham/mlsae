@@ -47,7 +47,7 @@ class DeepSAE(nn.Module):
         self.act_size = act_size
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
-        self.device = device
+        self.device = str(device)
         self.l1_lambda = l1_lambda
 
         # Indicates whether we're tracking global stats of feature activations

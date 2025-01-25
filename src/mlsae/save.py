@@ -48,7 +48,6 @@ def save_model(
         "sparse_dim": model.sparse_dim,
         "act_size": model.act_size,
         "enc_dtype": model.enc_dtype,
-        "device": model.device,
         "l1_lambda": model.l1_lambda,
         "name": model.name,
     }
@@ -154,7 +153,6 @@ def load_model(
         ],
         act_size=config_dict["act_size"],
         enc_dtype=config_dict["enc_dtype"],
-        device=config_dict["device"],
         l1_lambda=config_dict["l1_lambda"],
         name=config_dict["name"],
     )
