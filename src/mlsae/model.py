@@ -73,7 +73,7 @@ class DeepSAE(nn.Module):
         # --------------------------------------------------------
         # Build encoder
         # --------------------------------------------------------
-        encoder_layers = []
+        self.encoder_layers = []
         in_dim = self.act_size
 
         # Bulid the repeated (Linear -> ReLU -> LayerNorm) blocks
@@ -81,12 +81,10 @@ class DeepSAE(nn.Module):
             linear_layer = self._create_linear_layer(
                 in_dim, dim, apply_weight_decay=True
             )
-            encoder_layers.append(linear_layer)
-            encoder_layers.append(nn.Tanh())
-            encoder_layers.append(nn.LayerNorm(dim))
+            self.encoder_layers.append(linear_layer)
+            self.encoder_layers.append(nn.Tanh())
+            self.encoder_layers.append(nn.LayerNorm(dim))
             in_dim = dim
-
-        self.encoder = nn.Sequential(*encoder_layers)
 
         # Final encoder layer creates sparse representation
         self.sparse_layer = self._create_linear_layer(
@@ -96,25 +94,26 @@ class DeepSAE(nn.Module):
         # --------------------------------------------------------
         # Build decoder
         # --------------------------------------------------------
-        decoder_layers = []
+        self.decoder_layers = []
         out_dim = self.sparse_dim
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
                 out_dim, dim, apply_weight_decay=True
             )
-            decoder_layers.append(linear_layer)
-            decoder_layers.append(nn.ReLU())
-            decoder_layers.append(nn.LayerNorm(dim))
+            self.decoder_layers.append(linear_layer)
+            self.decoder_layers.append(nn.ReLU())
+            self.decoder_layers.append(nn.LayerNorm(dim))
             out_dim = dim
+        
+        if self.decoder_dims:
+            self.decoder_resid_layer_norm = nn.LayerNorm(act_size)
 
         # Final decoder layer -> output
         linear_out = self._create_linear_layer(
             out_dim, self.act_size, apply_weight_decay=False
         )
-        decoder_layers.append(linear_out)
-
-        self.decoder = nn.Sequential(*decoder_layers)
+        self.decoder_layers.append(linear_out)
 
         # Initialize weights, move to device/dtype
         self.init_weights()
@@ -175,15 +174,25 @@ class DeepSAE(nn.Module):
     def forward(self, x):
         # Encode
         if self.encoder_dims:
-            resid = self.encoder(x)
+            resid = x
+            for layer in self.encoder_layers:
+                resid = layer(resid)
             resid += x
         else:
             resid = x
 
         feature_acts = F.relu(self.sparse_layer(resid))
 
-        # Decode
-        reconstructed = self.decoder(feature_acts)
+        if self.decoder_dims:
+            # The first decoder layer will be d_model
+            d_model_resid = resid = self.decoder_layers[0](feature_acts)
+            for layer in self.decoder_layers[1:]:
+                resid = layer(resid)
+            resid += self.decoder_resid_layer_norm(d_model_resid)
+        else:
+            resid = self.decoder_layers[0](feature_acts)
+        
+        reconstructed = resid
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
