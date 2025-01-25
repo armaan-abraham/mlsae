@@ -13,18 +13,6 @@ model_dir = Path(__file__).parent / "checkpoints"
 
 
 class DeepSAE(nn.Module):
-    """
-    Multi-layer sparse autoencoder with a single sparse representation layer,
-    where we replace L1 regularization with a top-k activation mask.
-
-    Statistics for the feature activations can be tracked only after calling
-    the start_act_stat_tracking() method. If that method is called, we accumulate
-    the sum of feature activations, the sum of their squares, and the total element
-    count across all forward() calls. We also track the running sum of MSE losses
-    over calls to forward(). These can then be used to compute the overall mean,
-    std, and mean MSE via get_activation_stats().
-    """
-
     def __init__(
         self,
         encoder_dim_mults: list[int],

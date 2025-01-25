@@ -16,65 +16,14 @@ from datasets import load_dataset
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
+from mlsae.config import DataConfig, data_cfg
 from mlsae.worker import TaskType
 
 this_dir = Path(__file__).parent
 
-
-@dataclass
-class DataConfig:
-    seed: int = 49
-    buffer_batch_size_tokens: int = 65536
-    buffer_size_buffer_batch_size_mult: int = 128
-    seq_len: int = 128
-    model_batch_size_seqs: int = 256
-    enc_dtype: str = "fp32"
-    cache_dtype: str = "bf16"
-    model_name: str = "gpt2-small"
-    site: str = "resid_pre"
-    layer: int = 9
-    act_size: int = 768
-    dataset_name: str = "allenai/c4"
-    dataset_column_name: str = "text"
-    dataset_batch_size_entries: int = 50
-
-    eval_data_seed: int = 59
-    eval_batches: int = 500
-
-    caching: bool = True
-    # These are the fields that must match before reusing an existing cache
-    cache_id_fields: list = field(
-        default_factory=lambda: [
-            # TODO: eval data seed
-            "seed",
-            "model_name",
-            "layer",
-            "site",
-            "seq_len",
-            "act_size",
-            "enc_dtype",
-            "dataset_name",
-        ]
-    )
-
-    @property
-    def buffer_size_tokens(self) -> int:
-        return self.buffer_batch_size_tokens * self.buffer_size_buffer_batch_size_mult
-
-    @property
-    def act_name(self) -> str:
-        return transformer_lens.utils.get_act_name(self.site, self.layer)
-
-    @property
-    def eval_tokens(self) -> int:
-        return self.buffer_batch_size_tokens * self.eval_tokens_buffer_batch_size_mult
-
-
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 DEVICE_COUNT = torch.cuda.device_count()
-
-data_cfg = DataConfig()
 
 # Create directories
 this_dir = Path(__file__).parent
@@ -321,8 +270,13 @@ class Buffer:
     """
 
     def __init__(
-        self, results_queue: mp.Queue, tasks_queue: mp.Queue, eval: bool = False
+        self,
+        results_queue: mp.Queue,
+        tasks_queue: mp.Queue,
+        num_workers: int = DEVICE_COUNT,
+        eval: bool = False,
     ):
+        self.num_workers = num_workers
         self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
         logging.info("Initializing buffer...")
         self.token_stream = stream_training_chunks(
@@ -473,21 +427,22 @@ class Buffer:
         Distributes seqs across multiple processes (one per GPU). Collects results.
         """
         total_seqs = seqs.shape[0]
-        num_workers = len(self.workers)
-        chunk_size = total_seqs // num_workers
+        chunk_size = total_seqs // self.num_workers
         seqs_list = []
 
-        for i in range(num_workers):
+        for i in range(self.num_workers):
             start_idx = i * chunk_size
-            end_idx = total_seqs if i == (num_workers - 1) else (start_idx + chunk_size)
+            end_idx = (
+                total_seqs if i == (self.num_workers - 1) else (start_idx + chunk_size)
+            )
             seqs_list.append(seqs[start_idx:end_idx])
 
         logging.info("Running inference with multiprocessing...")
-        for i in range(num_workers):
+        for i in range(self.num_workers):
             self.tasks_queue.put((TaskType.GENERATE, {"seq_chunk": seqs_list[i]}))
 
         results = []
-        for _ in range(num_workers):
+        for _ in range(self.num_workers):
             result = self.results_queue.get()
             if isinstance(result, Exception):
                 raise result
@@ -498,13 +453,5 @@ class Buffer:
 
     def __del__(self):
         logging.info("Cleaning up Buffer resources...")
-        # If you want to signal termination to child processes:
-        if hasattr(self, "workers") and self.workers is not None:
-            for _ in self.workers:
-                self.tasks.put(None)
-            for worker in self.workers:
-                worker.join()
-            self.tasks.close()
-            self.results.close()
         if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
             self._prefetch_thread.join()

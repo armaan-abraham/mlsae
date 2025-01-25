@@ -18,67 +18,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+from mlsae.config import train_cfg
 from mlsae.data import Buffer, StaticBuffer, data_cfg
 from mlsae.model import DeepSAE
-
-
-@dataclass
-class TrainConfig:
-    architectures: list = field(
-        default_factory=lambda: [
-            {
-                "name": "0",
-                "encoder_dim_mults": [],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [],
-                "weight_decay": 5e-4,
-                "l1_lambda": 0.25,
-                "lr": 4e-3,
-            },
-            {
-                "name": "1",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [],
-                "weight_decay": 5e-4,
-                "l1_lambda": 0.25,
-                "lr": 4e-3,
-            },
-            {
-                "name": "2",
-                "encoder_dim_mults": [1],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [1],
-                "weight_decay": 5e-4,
-                "l1_lambda": 0.25,
-                "lr": 4e-3,
-            },
-            {
-                "name": "3",
-                "encoder_dim_mults": [1.5, 1],
-                "sparse_dim_mult": 8,
-                "decoder_dim_mults": [1, 1.5],
-                "weight_decay": 5e-4,
-                "l1_lambda": 0.25,
-                "lr": 4e-3,
-            },
-        ]
-    )
-
-    num_tokens: int = int(2e9)
-    wandb_project: str = "mlsae"
-    wandb_entity: str = "armaanabraham-independent"
-    save_to_s3: bool = False
-
-    measure_dead_over_n_batches: int = 15
-    resample_dead_every_n_batches: int = 375
-
-
-train_cfg = TrainConfig()
-
-assert (
-    train_cfg.resample_dead_every_n_batches % train_cfg.measure_dead_over_n_batches == 0
-)
 
 
 def main():
@@ -88,7 +30,7 @@ def main():
 
     # ===== Instantiate workers =====
 
-    task_queue = mp.Queue()
+    tasks_queue = mp.Queue()
     results_queue = mp.Queue()
     workers = []
 
@@ -97,13 +39,13 @@ def main():
     for device_id in range(torch.cuda.device_count()):
         p = mp.Process(
             target=worker,
-            args=(device_id, train_cfg, data_cfg, task_queue, results_queue),
+            args=(device_id, train_cfg, data_cfg, tasks_queue, results_queue),
         )
         p.start()
         workers.append(p)
 
     logging.info("Building buffer...")
-    buffer = Buffer()
+    buffer = Buffer(results_queue, tasks_queue)
 
     logging.info("Building models in CPU...")
     autoencoders = []
@@ -146,7 +88,7 @@ def main():
             for model_entry in autoencoders:
                 logging.info(f"Enqueuing task for {model_entry['name']}")
                 buf_clone = buffer.static_buffer.clone()
-                task_queue.put(
+                tasks_queue.put(
                     (
                         TaskType.TRAIN,
                         {"model_entry": model_entry, "static_buffer": buf_clone},
@@ -209,7 +151,7 @@ def main():
 
         # Signal workers to stop, then join
         for _ in workers:
-            task_queue.put(None)
+            tasks_queue.put(None)
         for w in workers:
             w.join()
 

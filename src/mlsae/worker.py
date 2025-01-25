@@ -4,7 +4,8 @@ import torch
 import torch.multiprocessing as mp
 import transformer_lens
 
-from mlsae.data import DTYPES, data_cfg
+from mlsae.config import data_cfg, train_cfg
+from mlsae.data import DTYPES
 
 
 class TaskType(enum.Enum):
@@ -13,9 +14,7 @@ class TaskType(enum.Enum):
     TERMINATE = 2
 
 
-def worker(
-    device_id: int, train_cfg: dict, data_cfg: dict, tasks: mp.Queue, results: mp.Queue
-):
+def worker(device_id: int, tasks: mp.Queue, results: mp.Queue):
     device = f"cuda:{device_id}"
 
     local_llm = transformer_lens.HookedTransformer.from_pretrained(
@@ -29,9 +28,9 @@ def worker(
             if task_type == TaskType.TERMINATE:
                 break
             elif task_type == TaskType.GENERATE:
-                task_generate(results, data_cfg, device, local_llm, task_data)
+                task_generate(results, device, local_llm, task_data)
             elif task_type == TaskType.TRAIN:
-                task_train(results, data_cfg, device, task_data)
+                task_train(results, device, task_data)
             else:
                 raise ValueError(f"Unknown task type: {task}")
     except Exception as e:
@@ -41,7 +40,6 @@ def worker(
 
 def task_generate(
     results: mp.Queue,
-    data_cfg: dict,
     device: str,
     local_llm: transformer_lens.HookedTransformer,
     task_data: dict,
@@ -93,7 +91,7 @@ def model_step(model_entry, acts):
     }
 
 
-def task_train(results: mp.Queue, train_cfg: dict, device: str, task_data: dict):
+def task_train(results: mp.Queue, device: str, task_data: dict):
     model_entry = task_data["model_entry"]
     static_buffer = task_data["static_buffer"]
     model_entry["model"].to(device)
@@ -130,7 +128,7 @@ def task_train(results: mp.Queue, train_cfg: dict, device: str, task_data: dict)
             model_entry["act_freq_history"] = torch.zeros(
                 model_entry["model"].sparse_dim,
                 dtype=torch.float,
-                device=device_str,
+                device=device,
             )
 
         metrics_list.append(metrics)
