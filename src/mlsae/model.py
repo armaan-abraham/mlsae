@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+import os
 
 import torch
 import torch.nn as nn
@@ -37,8 +38,8 @@ class DeepSAE(nn.Module):
     ):
         super().__init__()
 
-        assert encoder_dim_mults[-1] == 1
-        assert decoder_dim_mults[0] == 1
+        assert not encoder_dim_mults or encoder_dim_mults[-1] == 1
+        assert not decoder_dim_mults or decoder_dim_mults[0] == 1
         self.name = name
         self.encoder_dims = [int(dim * act_size) for dim in encoder_dim_mults]
         self.decoder_dims = [int(dim * act_size) for dim in decoder_dim_mults]
@@ -71,7 +72,7 @@ class DeepSAE(nn.Module):
         # --------------------------------------------------------
         # Build encoder
         # --------------------------------------------------------
-        self.encoder_layers = []
+        self.encoder_layers = torch.nn.ModuleList()
         in_dim = self.act_size
 
         # Bulid the repeated (Linear -> ReLU -> LayerNorm) blocks
@@ -92,29 +93,26 @@ class DeepSAE(nn.Module):
         # --------------------------------------------------------
         # Build decoder
         # --------------------------------------------------------
-        self.decoder_layers = []
+        decoder_layers = []
         out_dim = self.sparse_dim
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
                 out_dim, dim, apply_weight_decay=True
             )
-            self.decoder_layers.append(linear_layer)
-            self.decoder_layers.append(nn.ReLU())
-            self.decoder_layers.append(nn.LayerNorm(dim))
+            decoder_layers.append(linear_layer)
+            decoder_layers.append(nn.ReLU())
+            decoder_layers.append(nn.LayerNorm(dim))
             out_dim = dim
-
-        if self.decoder_dims:
-            self.decoder_resid_layer_norm = nn.LayerNorm(act_size)
 
         # Final decoder layer -> output
         linear_out = self._create_linear_layer(
             out_dim, self.act_size, apply_weight_decay=False
         )
-        self.decoder_layers.append(linear_out)
+        decoder_layers.append(linear_out)
 
-        # Initialize weights, move to device/dtype
-        self.init_weights()
+        self.decoder = nn.Sequential(*decoder_layers)
+
         self.to(self.device, self.dtype)
 
     def start_act_stat_tracking(self):
@@ -136,6 +134,8 @@ class DeepSAE(nn.Module):
         is always placed in params_no_decay (commonly done in PyTorch).
         """
         layer = nn.Linear(in_dim, out_dim)
+        nn.init.kaiming_normal_(layer.weight)
+        nn.init.zeros_(layer.bias)
 
         if apply_weight_decay:
             self.params_with_decay.append(layer.weight)
@@ -158,17 +158,6 @@ class DeepSAE(nn.Module):
             {"params": self.params_no_decay, "weight_decay": 0.0},
         ]
 
-    def init_weights(self):
-        for layer in self.encoder:
-            if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight)
-                nn.init.zeros_(layer.bias)
-
-        for layer in self.decoder:
-            if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight)
-                nn.init.zeros_(layer.bias)
-
     def forward(self, x):
         # Encode
         if self.encoder_dims:
@@ -181,16 +170,7 @@ class DeepSAE(nn.Module):
 
         feature_acts = F.relu(self.sparse_layer(resid))
 
-        if self.decoder_dims:
-            # The first decoder layer will be d_model
-            d_model_resid = resid = self.decoder_layers[0](feature_acts)
-            for layer in self.decoder_layers[1:]:
-                resid = layer(resid)
-            resid += self.decoder_resid_layer_norm(d_model_resid)
-        else:
-            resid = self.decoder_layers[0](feature_acts)
-
-        reconstructed = resid
+        reconstructed = self.decoder(feature_acts)
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
@@ -271,16 +251,18 @@ class DeepSAE(nn.Module):
     @torch.no_grad()
     def resample_sparse_features(self, idx):
         logging.info("Resampling sparse features...")
-        new_W_enc = torch.zeros_like(self.encoder[-1].weight)
-        new_W_dec = torch.zeros_like(self.decoder[0].weight)
+        enc_layer = self.sparse_layer
+        dec_layer = self.decoder[0]
+        new_W_enc = torch.zeros_like(enc_layer.weight)
+        new_W_dec = torch.zeros_like(dec_layer.weight)
         nn.init.kaiming_normal_(new_W_enc)
         nn.init.kaiming_normal_(new_W_dec)
 
-        new_b_enc = torch.zeros_like(self.encoder[-1].bias)
+        new_b_enc = torch.zeros_like(enc_layer.bias)
 
-        self.encoder[-1].weight.data[idx] = new_W_enc[idx]
-        self.encoder[-1].bias.data[idx] = new_b_enc[idx]
-        self.decoder[0].weight.data[:, idx] = new_W_dec[:, idx]
+        enc_layer.weight.data[idx] = new_W_enc[idx]
+        enc_layer.bias.data[idx] = new_b_enc[idx]
+        dec_layer.weight.data[:, idx] = new_W_dec[:, idx]
 
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)

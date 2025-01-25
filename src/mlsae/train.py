@@ -7,15 +7,18 @@ import torch
 import torch.multiprocessing as mp
 import tqdm
 import wandb
-
-from mlsae.data import Buffer, StaticBuffer, data_cfg
-from mlsae.model import DeepSAE
+import gc
+import os
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+from mlsae.data import Buffer, StaticBuffer, data_cfg
+from mlsae.model import DeepSAE
+
 
 
 @dataclass
@@ -66,8 +69,8 @@ class TrainConfig:
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = False
 
-    measure_dead_over_n_batches: int = 10
-    resample_dead_every_n_batches: int = 350
+    measure_dead_over_n_batches: int = 15
+    resample_dead_every_n_batches: int = 375
 
 
 train_cfg = TrainConfig()
@@ -78,11 +81,10 @@ assert (
 
 
 def model_step(model_entry, acts):
-    device = model_entry["device"]
     autoenc = model_entry["model"]
     optimizer = model_entry["optimizer"]
 
-    acts = acts.to(device, non_blocking=True)
+    assert acts.device == autoenc.device, f"Acts on device {acts.device}, expected {autoenc.device}"
     loss, mse_loss, l1_loss, feature_acts, _ = autoenc(acts)
     loss.backward()
     autoenc.make_decoder_weights_and_grad_unit_norm()
@@ -103,6 +105,7 @@ def train_worker(device_id, task_queue, results_queue):
     a single shared task queue. Moves them to 'cuda:device_id', runs training,
     returns (updated_model_entry, metrics_list) in results_queue.
     """
+    logging.info(f"Starting training worker {device_id}, process ID: {os.getpid()}")
     device_str = f"cuda:{device_id}"
     while True:
         task = task_queue.get()
@@ -121,7 +124,7 @@ def train_worker(device_id, task_queue, results_queue):
             while not static_buffer.needs_refresh():
                 acts = static_buffer.next()
                 step_res = model_step(model_entry, acts)
-                act_freq_batch = (step_res["feature_acts"] == 0).mean(dim=0)
+                act_freq_batch = (step_res["feature_acts"] > 0).float().mean(dim=0)
                 model_entry["act_freq_history"] += act_freq_batch
 
                 # store step metrics
@@ -137,16 +140,18 @@ def train_worker(device_id, task_queue, results_queue):
                 if (
                     model_entry["n_iter"] + 1
                 ) % train_cfg.measure_dead_over_n_batches == 0:
-                    dead_features = act_freq_history == 0
+                    dead_features = model_entry["act_freq_history"] == 0
 
                     if (
                         model_entry["n_iter"] + 1
                     ) % train_cfg.resample_dead_every_n_batches == 0:
                         model_entry["model"].resample_sparse_features(dead_features)
 
-                    metrics["dead_features"] = dead_features.mean().item()
-                    act_freq_history = torch.zeros(
-                        model_entry["model"].sparse_dim, dtype=torch.float
+                    metrics["dead_features"] = dead_features.float().mean().item()
+                    model_entry["act_freq_history"] = torch.zeros(
+                        model_entry["model"].sparse_dim,
+                        dtype=torch.float,
+                        device=device_str,
                     )
 
                 metrics_list.append(metrics)
@@ -156,8 +161,21 @@ def train_worker(device_id, task_queue, results_queue):
             model_entry["model"].to("cpu")
             model_entry["act_freq_history"] = model_entry["act_freq_history"].to("cpu")
             results_queue.put((model_entry, metrics_list))
+            del task
+            del model_entry
+            del static_buffer
+            del acts
+            gc.collect()
         except Exception as e:
-            results_queue.put(e)
+            import traceback
+            error_info = {
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'traceback': traceback.format_exc(),
+                'device_id': device_id,
+                'model_name': model_entry['name']
+            }
+            results_queue.put(('error', error_info))
 
 
 def main():
@@ -193,6 +211,9 @@ def main():
                 "optimizer": optimizer,
                 "name": arch_dict["name"],
                 "n_iter": 0,
+                "act_freq_history": torch.zeros(
+                    autoenc.sparse_dim, dtype=torch.float
+                ),
             }
         )
 
@@ -205,7 +226,6 @@ def main():
     results_queue = mp.Queue()
 
     # Start as many workers as GPUs
-    mp.set_start_method("spawn", force=True)
     workers = []
     for device_id in range(n_gpus):
         p = mp.Process(target=train_worker, args=(device_id, task_queue, results_queue))
@@ -219,6 +239,7 @@ def main():
 
             # For each model, clone the static buffer and enqueue a task
             for model_entry in autoencoders:
+                logging.info(f"Enqueuing task for {model_entry['name']}")
                 buf_clone = buffer.static_buffer.clone()
                 task_queue.put((model_entry, buf_clone))
 
@@ -227,25 +248,39 @@ def main():
             all_metrics = []
             for _ in range(len(autoencoders)):
                 result = results_queue.get()
-                if isinstance(result, Exception):
-                    logging.error(f"Worker encountered an error: {result}")
-                    raise RuntimeError(result)
+                if isinstance(result, tuple) and result[0] == 'error':
+                    error_info = result[1]
+                    error_msg = (
+                        f"Worker error on device {error_info['device_id']} "
+                        f"for model {error_info['model_name']}:\n"
+                        f"{error_info['error_type']}: {error_info['error_message']}\n"
+                        f"Traceback:\n{error_info['traceback']}"
+                    )
+                    logging.error(error_msg)
+                    raise RuntimeError(error_msg)
                 model_entry, metrics_list = result
                 updated_autoencoders.append(model_entry)
                 all_metrics.extend(metrics_list)
+                logging.info(f"Collected results for {model_entry['name']}")
 
             # Reassign
             autoencoders = updated_autoencoders
 
             # Group step metrics and log them
             metrics_by_step = {}
+            logging.info(f"Grouping metrics for {len(all_metrics)} steps")
+            logging.info(f"Metrics[0]: {all_metrics[0]}")
             for m in all_metrics:
                 arch_name = m["arch_name"]
-                metrics_by_step[m["step_index"]].update(
+                step_idx = m["n_iter"]
+                # Initialize the dict for this step if it doesn't exist
+                if step_idx not in metrics_by_step:
+                    metrics_by_step[step_idx] = {}
+                metrics_by_step[step_idx].update(
                     {
                         f"{arch_name}_{k}": v
                         for k, v in m.items()
-                        if k not in ["arch_name", "step_index"]
+                        if k not in ["arch_name", "n_iter"]
                     }
                 )
 

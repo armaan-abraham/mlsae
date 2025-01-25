@@ -23,7 +23,7 @@ this_dir = Path(__file__).parent
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 65536
-    buffer_size_buffer_batch_size_mult: int = 256
+    buffer_size_buffer_batch_size_mult: int = 128
     seq_len: int = 128
     model_batch_size_seqs: int = 256
     enc_dtype: str = "fp32"
@@ -71,7 +71,6 @@ class DataConfig:
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 DEVICE_COUNT = torch.cuda.device_count()
-logging.info(f"Using {DEVICE_COUNT} GPUs")
 
 data_cfg = DataConfig()
 
@@ -142,6 +141,7 @@ def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path, eval=False) -
 
 
 def worker(tasks: mp.Queue, results: mp.Queue, device_id: int):
+    logging.info(f"Starting act generation worker {device_id}, process ID: {os.getpid()}")
     device = f"cuda:{device_id}"
 
     local_model = transformer_lens.HookedTransformer.from_pretrained(
@@ -348,7 +348,7 @@ class StaticBuffer:
         self.pointer = 0
 
     def needs_refresh(self):
-        return self.pointer > self.buffer.shape[0]
+        return self.pointer >= self.buffer.shape[0]
 
     def to(self, device: str) -> None:
         self.buffer = self.buffer.to(device)
