@@ -331,6 +331,41 @@ def stream_training_chunks(data_cfg, cache_dir, eval: bool = False):
     for batch in dataset_iter:
         yield batch["tokens"].to(dtype=torch.int32, device="cpu")
 
+class StaticBuffer:
+    def __init__(self):
+        self.pointer = 0
+
+    def populate(self, buffer: torch.Tensor):
+        assert buffer.ndim == 2, f"Expected buffer to be 2D, got {buffer.ndim}D"
+        assert (
+            buffer.shape[1] == data_cfg.act_size
+        ), f"Expected buffer to have act size {data_cfg.act_size}, got {buffer.shape[1]}"
+        assert (
+            buffer.shape[0] == data_cfg.buffer_size_tokens
+        ), f"Expected buffer to have {data_cfg.buffer_size_tokens} tokens, got {buffer.shape[0]}"
+        self.buffer = buffer
+        self.pointer = 0
+
+    def needs_refresh(self):
+        return self.pointer > self.buffer.shape[0]
+
+    def to(self, device: str) -> None:
+        self.buffer = self.buffer.to(device)
+
+    @torch.no_grad()
+    def next(self):
+        assert not self.needs_refresh(), "Buffer is empty"
+        out = self.buffer[
+            self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens
+        ]
+        self.pointer += data_cfg.buffer_batch_size_tokens
+        return out
+
+    def clone(self):
+        new_buffer = StaticBuffer()
+        new_buffer.buffer = self.buffer.clone()
+        new_buffer.pointer = self.pointer
+        return new_buffer
 
 class Buffer:
     """
@@ -349,10 +384,11 @@ class Buffer:
 
         self._init_cache(eval=eval)
 
-        self.pointer = 0
-
         # For cache
         self.chunk_index = 0
+
+        # Create and store a StaticBuffer instance.
+        self.static_buffer = StaticBuffer()
 
         # Prefetch-related members
         self._prefetch_thread = None
@@ -424,7 +460,7 @@ class Buffer:
     @torch.no_grad()
     def refresh(self):
         """
-        Refreshes the buffer with the next chunk. If a prefetched chunk is
+        Refreshes the StaticBuffer with the next chunk. If a prefetched chunk is
         available, uses it. Otherwise, normal logic applies. Spawns a new thread
         to prefetch the next chunk from cache for potential future use.
         """
@@ -483,8 +519,8 @@ class Buffer:
                         self.cache_path / f"chunk_{self.chunk_index}.pt",
                     )
 
-        self.buffer = acts
-        self.pointer = 0
+        # Populate our StaticBuffer
+        self.static_buffer.populate(acts)
 
         self.chunk_index += 1
 
@@ -527,24 +563,10 @@ class Buffer:
         logging.info("Combining partial results...")
         return torch.cat(results, dim=0)
 
-    def will_refresh(self):
-        return (self.pointer + data_cfg.buffer_batch_size_tokens) > self.buffer.shape[0]
-
-    @torch.no_grad()
-    def next(self):
-        will_refresh = self.will_refresh()
-        out = self.buffer[
-            self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens
-        ]
-        self.pointer += data_cfg.buffer_batch_size_tokens
-        if will_refresh:
-            self.refresh()
-        return out
-
     def __del__(self):
         logging.info("Cleaning up Buffer resources...")
-        if self.use_multiprocessing:
-            # Send termination signal to workers
+        # If you want to signal termination to child processes:
+        if hasattr(self, "workers") and self.workers is not None:
             for _ in self.workers:
                 self.tasks.put(None)
             for worker in self.workers:
