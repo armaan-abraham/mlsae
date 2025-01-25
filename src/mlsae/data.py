@@ -16,6 +16,8 @@ from datasets import load_dataset
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
+from mlsae.worker import TaskType
+
 this_dir = Path(__file__).parent
 
 
@@ -88,8 +90,6 @@ for dir_path in [cache_dir, data_dir, model_dir, activations_dir]:
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
 
-tokenizer = AutoTokenizer.from_pretrained("gpt2")
-
 
 def get_relevant_config_subset(cfg: DataConfig) -> dict:
     """
@@ -138,60 +138,6 @@ def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path, eval=False) -
         json.dump(relevant_cfg, f, indent=2)
 
     return new_cache_folder
-
-
-def worker(tasks: mp.Queue, results: mp.Queue, device_id: int):
-    logging.info(f"Starting act generation worker {device_id}, process ID: {os.getpid()}")
-    device = f"cuda:{device_id}"
-
-    local_model = transformer_lens.HookedTransformer.from_pretrained(
-        data_cfg.model_name, device="cpu"
-    ).to(DTYPES[data_cfg.enc_dtype])
-
-    try:
-        while True:
-            task = tasks.get()
-
-            if task is None:
-                break
-
-            seq_chunk = task
-
-            local_model.to(device)
-
-            batch_size_seqs = data_cfg.model_batch_size_seqs
-            all_acts = []
-            seq_chunk = seq_chunk.to(device)
-
-            with torch.autocast("cuda", DTYPES[data_cfg.enc_dtype]):
-                for start in range(0, seq_chunk.shape[0], batch_size_seqs):
-                    sub_chunk = seq_chunk[start : start + batch_size_seqs]
-                    _, cache = local_model.run_with_cache(
-                        sub_chunk,
-                        stop_at_layer=data_cfg.layer + 1,
-                        names_filter=data_cfg.act_name,
-                        return_cache_object=True,
-                    )
-                    acts = cache.cache_dict[data_cfg.act_name]
-                    assert (
-                        acts.shape[-1] == data_cfg.act_size
-                    ), f"Expected {data_cfg.act_size} act size, got {acts.shape[-1]}"
-                    acts = acts.reshape(
-                        acts.shape[0] * acts.shape[1], data_cfg.act_size
-                    )
-                    all_acts.append(acts.to("cpu"))
-
-            results.put(torch.cat(all_acts, dim=0))
-
-            del acts
-            del all_acts
-            del cache
-            del seq_chunk
-            local_model.to("cpu")
-
-    except Exception as e:
-        results.put(e)
-        raise
 
 
 def keep_single_column(dataset: Dataset, col_name: str):
@@ -304,7 +250,7 @@ def tokenize_and_concatenate(
     return tokenized_dataset.with_format(type="torch")
 
 
-def stream_training_chunks(data_cfg, cache_dir, eval: bool = False):
+def stream_training_chunks(data_cfg, cache_dir, tokenizer, eval: bool = False):
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
         "en",
@@ -374,15 +320,20 @@ class Buffer:
     Streams tokens and fills self.buffer with model activations.
     """
 
-    def __init__(self, eval: bool = False):
+    def __init__(
+        self, results_queue: mp.Queue, tasks_queue: mp.Queue, eval: bool = False
+    ):
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
         logging.info("Initializing buffer...")
         self.token_stream = stream_training_chunks(
             data_cfg,
             cache_dir,
+            self.tokenizer,
             eval=eval,
         )
 
-        self._init_act_gen_workers()
+        self.results_queue = results_queue
+        self.tasks_queue = tasks_queue
 
         self._init_cache(eval=eval)
 
@@ -415,25 +366,6 @@ class Buffer:
                     data_cfg, activations_dir, eval=eval
                 )
                 logging.info(f"Created new cache folder: {self.cache_path}")
-
-    def _init_act_gen_workers(self):
-        mp.set_start_method("spawn", force=True)
-        self.tasks = mp.Queue()
-        self.results = mp.Queue()
-        self.workers = []
-
-        # Spin up child processes that each hold a model
-        for i in range(DEVICE_COUNT):
-            p = mp.Process(
-                target=worker,
-                args=(
-                    self.tasks,
-                    self.results,
-                    i,
-                ),
-            )
-            p.start()
-            self.workers.append(p)
 
     def _prefetch_chunk(self, next_index: int):
         """
@@ -488,7 +420,9 @@ class Buffer:
         assert (
             tokens.shape[1] == data_cfg.seq_len
         ), f"Expected tokens to have sequence length {data_cfg.seq_len}, got {tokens.shape[1]}"
-        assert (tokens[:, 0] == tokenizer.bos_token_id).all(), "First token is not BOS"
+        assert (
+            tokens[:, 0] == self.tokenizer.bos_token_id
+        ).all(), "First token is not BOS"
 
         # If we did not have prefetched data, do the usual load/generate
         if acts is None:
@@ -538,9 +472,6 @@ class Buffer:
         """
         Distributes seqs across multiple processes (one per GPU). Collects results.
         """
-        assert (
-            hasattr(self, "workers") and self.workers is not None
-        ), "Workers not initialized"
         total_seqs = seqs.shape[0]
         num_workers = len(self.workers)
         chunk_size = total_seqs // num_workers
@@ -553,11 +484,11 @@ class Buffer:
 
         logging.info("Running inference with multiprocessing...")
         for i in range(num_workers):
-            self.tasks.put(seqs_list[i])
+            self.tasks_queue.put((TaskType.GENERATE, {"seq_chunk": seqs_list[i]}))
 
         results = []
         for _ in range(num_workers):
-            result = self.results.get()
+            result = self.results_queue.get()
             if isinstance(result, Exception):
                 raise result
             results.append(result)

@@ -7,8 +7,10 @@ import torch
 import torch.multiprocessing as mp
 import tqdm
 import wandb
-import gc
-import os
+
+from mlsae.data import Buffer, StaticBuffer, data_cfg
+from mlsae.model import DeepSAE
+from mlsae.worker import TaskType, worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,7 +20,6 @@ logging.basicConfig(
 
 from mlsae.data import Buffer, StaticBuffer, data_cfg
 from mlsae.model import DeepSAE
-
 
 
 @dataclass
@@ -80,114 +81,31 @@ assert (
 )
 
 
-def model_step(model_entry, acts):
-    autoenc = model_entry["model"]
-    optimizer = model_entry["optimizer"]
-
-    assert acts.device == autoenc.device, f"Acts on device {acts.device}, expected {autoenc.device}"
-    loss, mse_loss, l1_loss, feature_acts, _ = autoenc(acts)
-    loss.backward()
-    autoenc.make_decoder_weights_and_grad_unit_norm()
-    optimizer.step()
-    optimizer.zero_grad()
-
-    return {
-        "loss": loss.item(),
-        "mse_loss": mse_loss.item(),
-        "l1_loss": l1_loss.item(),
-        "feature_acts": feature_acts.detach(),
-    }
-
-
-def train_worker(device_id, task_queue, results_queue):
-    """
-    Single worker pinned to device_id. Receives (model_entry, static_buffer) from
-    a single shared task queue. Moves them to 'cuda:device_id', runs training,
-    returns (updated_model_entry, metrics_list) in results_queue.
-    """
-    logging.info(f"Starting training worker {device_id}, process ID: {os.getpid()}")
-    device_str = f"cuda:{device_id}"
-    while True:
-        task = task_queue.get()
-        if task is None:
-            break
-        model_entry, static_buffer = task
-        try:
-            model_entry["model"].to(device_str)
-            static_buffer.to(device_str)
-            model_entry["act_freq_history"] = model_entry["act_freq_history"].to(
-                device_str
-            )
-
-            metrics_list = []
-
-            while not static_buffer.needs_refresh():
-                acts = static_buffer.next()
-                step_res = model_step(model_entry, acts)
-                act_freq_batch = (step_res["feature_acts"] > 0).float().mean(dim=0)
-                model_entry["act_freq_history"] += act_freq_batch
-
-                # store step metrics
-                metrics = {
-                    "arch_name": model_entry["name"],
-                    "loss": step_res["loss"],
-                    "mse_loss": step_res["mse_loss"],
-                    "l1_loss": step_res["l1_loss"],
-                    "act_freq": act_freq_batch.mean().item(),
-                    "n_iter": model_entry["n_iter"],
-                }
-
-                if (
-                    model_entry["n_iter"] + 1
-                ) % train_cfg.measure_dead_over_n_batches == 0:
-                    dead_features = model_entry["act_freq_history"] == 0
-
-                    if (
-                        model_entry["n_iter"] + 1
-                    ) % train_cfg.resample_dead_every_n_batches == 0:
-                        model_entry["model"].resample_sparse_features(dead_features)
-
-                    metrics["dead_features"] = dead_features.float().mean().item()
-                    model_entry["act_freq_history"] = torch.zeros(
-                        model_entry["model"].sparse_dim,
-                        dtype=torch.float,
-                        device=device_str,
-                    )
-
-                metrics_list.append(metrics)
-                model_entry["n_iter"] += 1
-
-            # move back to CPU
-            model_entry["model"].to("cpu")
-            model_entry["act_freq_history"] = model_entry["act_freq_history"].to("cpu")
-            results_queue.put((model_entry, metrics_list))
-            del task
-            del model_entry
-            del static_buffer
-            del acts
-            gc.collect()
-        except Exception as e:
-            import traceback
-            error_info = {
-                'error_type': type(e).__name__,
-                'error_message': str(e),
-                'traceback': traceback.format_exc(),
-                'device_id': device_id,
-                'model_name': model_entry['name']
-            }
-            results_queue.put(('error', error_info))
-
-
 def main():
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
     wandb.config.update(train_cfg)
     wandb.config.update(data_cfg)
 
+    # ===== Instantiate workers =====
+
+    task_queue = mp.Queue()
+    results_queue = mp.Queue()
+    workers = []
+
+    mp.set_start_method("spawn", force=True)
+    workers = []
+    for device_id in range(torch.cuda.device_count()):
+        p = mp.Process(
+            target=worker,
+            args=(device_id, train_cfg, data_cfg, task_queue, results_queue),
+        )
+        p.start()
+        workers.append(p)
+
     logging.info("Building buffer...")
     buffer = Buffer()
 
     logging.info("Building models in CPU...")
-    n_gpus = torch.cuda.device_count()
     autoencoders = []
     for i, arch_dict in enumerate(train_cfg.architectures):
         autoenc = DeepSAE(
@@ -211,26 +129,13 @@ def main():
                 "optimizer": optimizer,
                 "name": arch_dict["name"],
                 "n_iter": 0,
-                "act_freq_history": torch.zeros(
-                    autoenc.sparse_dim, dtype=torch.float
-                ),
+                "act_freq_history": torch.zeros(autoenc.sparse_dim, dtype=torch.float),
             }
         )
 
     # Number of times we refresh the buffer
     num_buffer_refreshes = train_cfg.num_tokens // data_cfg.buffer_size_tokens
     logging.info(f"Will refresh buffer {num_buffer_refreshes} times")
-
-    # Create a single shared task queue and a single shared results queue
-    task_queue = mp.Queue()
-    results_queue = mp.Queue()
-
-    # Start as many workers as GPUs
-    workers = []
-    for device_id in range(n_gpus):
-        p = mp.Process(target=train_worker, args=(device_id, task_queue, results_queue))
-        p.start()
-        workers.append(p)
 
     try:
         for outer_idx in tqdm.trange(num_buffer_refreshes, desc="Buffer refreshes"):
@@ -241,14 +146,19 @@ def main():
             for model_entry in autoencoders:
                 logging.info(f"Enqueuing task for {model_entry['name']}")
                 buf_clone = buffer.static_buffer.clone()
-                task_queue.put((model_entry, buf_clone))
+                task_queue.put(
+                    (
+                        TaskType.TRAIN,
+                        {"model_entry": model_entry, "static_buffer": buf_clone},
+                    )
+                )
 
             # Collect results for each model
             updated_autoencoders = []
             all_metrics = []
             for _ in range(len(autoencoders)):
                 result = results_queue.get()
-                if isinstance(result, tuple) and result[0] == 'error':
+                if isinstance(result, tuple) and result[0] == "error":
                     error_info = result[1]
                     error_msg = (
                         f"Worker error on device {error_info['device_id']} "
