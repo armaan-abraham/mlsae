@@ -10,8 +10,6 @@ from mlsae.data import DTYPES
 
 model_dir = Path(__file__).parent / "checkpoints"
 
-ZERO_ACT_THRESHOLD = 0
-
 
 class DeepSAE(nn.Module):
     """
@@ -105,7 +103,7 @@ class DeepSAE(nn.Module):
             self.decoder_layers.append(nn.ReLU())
             self.decoder_layers.append(nn.LayerNorm(dim))
             out_dim = dim
-        
+
         if self.decoder_dims:
             self.decoder_resid_layer_norm = nn.LayerNorm(act_size)
 
@@ -191,7 +189,7 @@ class DeepSAE(nn.Module):
             resid += self.decoder_resid_layer_norm(d_model_resid)
         else:
             resid = self.decoder_layers[0](feature_acts)
-        
+
         reconstructed = resid
 
         # MSE reconstruction loss
@@ -200,9 +198,6 @@ class DeepSAE(nn.Module):
         # L1 penalty on feature activations
         l1_loss = self.l1_lambda * feature_acts.abs().mean()
         loss = mse_loss + l1_loss
-
-        # Number of nonzero activations (for monitoring)
-        nonzero_acts = (feature_acts > ZERO_ACT_THRESHOLD).float().sum(dim=1).mean()
 
         # Optionally track activation stats and MSE
         if self.track_acts_stats:
@@ -214,7 +209,7 @@ class DeepSAE(nn.Module):
             self.mse_sum += mse_loss.item()
             self.mse_count += 1
 
-        return loss, mse_loss, l1_loss, nonzero_acts, feature_acts, reconstructed
+        return loss, mse_loss, l1_loss, feature_acts, reconstructed
 
     def get_activation_stats(self):
         """

@@ -331,6 +331,7 @@ def stream_training_chunks(data_cfg, cache_dir, eval: bool = False):
     for batch in dataset_iter:
         yield batch["tokens"].to(dtype=torch.int32, device="cpu")
 
+
 class StaticBuffer:
     def __init__(self):
         self.pointer = 0
@@ -366,6 +367,7 @@ class StaticBuffer:
         new_buffer.buffer = self.buffer.clone()
         new_buffer.pointer = self.pointer
         return new_buffer
+
 
 class Buffer:
     """
