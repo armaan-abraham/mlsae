@@ -96,13 +96,12 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
     model_entry = task_data["model_entry"]
     static_buffer = task_data["static_buffer"]
     model_entry["model"].to(device)
-    static_buffer.to(device)
     model_entry["act_freq_history"] = model_entry["act_freq_history"].to(device)
 
     metrics_list = []
 
     while not static_buffer.needs_refresh():
-        acts = static_buffer.next()
+        acts = static_buffer.next().to(device)
         step_res = model_step(model_entry, acts)
         act_freq_batch = (step_res["feature_acts"] > 0).float().mean(dim=0)
         model_entry["act_freq_history"] += act_freq_batch
@@ -118,14 +117,14 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
         }
 
         if (model_entry["n_iter"] + 1) % train_cfg.measure_dead_over_n_batches == 0:
-            dead_features = model_entry["act_freq_history"] < 50
+            dead_features = model_entry["act_freq_history"] == 0
 
             if (
                 model_entry["n_iter"] + 1
             ) % train_cfg.resample_dead_every_n_batches == 0:
                 model_entry["model"].resample_sparse_features(dead_features)
 
-            metrics["dead_features"] = dead_features.float().mean().item()
+            metrics["dead_features"] = dead_features.float().sum().item()
             model_entry["act_freq_history"] = torch.zeros(
                 model_entry["model"].sparse_dim,
                 dtype=torch.float,

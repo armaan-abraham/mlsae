@@ -9,7 +9,7 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     buffer_batch_size_tokens: int = 65536
-    buffer_size_buffer_batch_size_mult: int = 512
+    buffer_size_buffer_batch_size_mult: int = 32
     seq_len: int = 128
     model_batch_size_seqs: int = 256
     enc_dtype: str = "fp32"
@@ -25,7 +25,7 @@ class DataConfig:
     eval_data_seed: int = 59
     eval_batches: int = 500
 
-    caching: bool = True
+    caching: bool = False
     # These are the fields that must match before reusing an existing cache
     cache_id_fields: list = field(
         default_factory=lambda: [
@@ -65,7 +65,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 3e-4,
-                "lr": 4e-4,
+                "lr": 2e-3,
             },
             # 1 Encoder layer
             {
@@ -73,8 +73,8 @@ class TrainConfig:
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
-                "weight_decay": 3e-4,
-                "lr": 2e-4,
+                "weight_decay": 5e-5,
+                "lr": 4e-4,
             },
             # 1 Encoder layer, 1 Decoder layer
             {
@@ -82,13 +82,13 @@ class TrainConfig:
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
-                "weight_decay": 3e-4,
-                "lr": 1.5e-4,
+                "weight_decay": 5e-5,
+                "lr": 2e-4,
             },
         ]
     )
 
-    num_tokens: int = int(3e9)
+    num_tokens: int = int(1.5e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = True
@@ -98,7 +98,7 @@ class TrainConfig:
 
 
 train_cfg = TrainConfig()
-l1_lambdas = [0.05, 0.1, 0.5, 1, 5, 10, 20]
+l1_lambdas = [0.5, 1, 20]
 archs = []
 for l1_lambda in l1_lambdas:
     for arch in train_cfg.architectures:

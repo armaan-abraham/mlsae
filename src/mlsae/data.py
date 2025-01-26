@@ -301,9 +301,6 @@ class Buffer:
         self._prefetched_acts = None
         self._prefetch_lock = threading.Lock()
 
-        # Load the very first buffer content
-        self.refresh()
-
     def _init_cache(self, eval: bool = False):
         # Find or create cache folder if caching is enabled
         self.cache_path = None
