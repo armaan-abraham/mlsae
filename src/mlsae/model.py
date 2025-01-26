@@ -67,7 +67,9 @@ class DeepSAE(nn.Module):
             linear_layer = self._create_linear_layer(
                 in_dim, dim, apply_weight_decay=True
             )
-            self.dense_encoder_blocks.append(torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim)))
+            self.dense_encoder_blocks.append(
+                torch.nn.Sequential(linear_layer, nn.Tanh(), nn.LayerNorm(dim))
+            )
             in_dim = dim
 
         self.sparse_encoder_block = torch.nn.Sequential(
@@ -80,19 +82,22 @@ class DeepSAE(nn.Module):
         # --------------------------------------------------------
         # Build decoder
         # --------------------------------------------------------
-        self.hidden_decoder_blocks = torch.nn.ModuleList()
-        out_dim = self.sparse_dim
+        decoder_blocks = []
+        in_dim = self.sparse_dim
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
-                out_dim, dim, apply_weight_decay=True
+                in_dim, dim, apply_weight_decay=True
             )
-            self.hidden_decoder_blocks.append(torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim)))
-            out_dim = dim
+            decoder_blocks.append(linear_layer)
+            decoder_blocks.append(nn.ReLU())
+            in_dim = dim
 
-        self.final_decoder_block = self._create_linear_layer(
-            out_dim, self.act_size, apply_weight_decay=False
+        decoder_blocks.append(
+            self._create_linear_layer(in_dim, self.act_size, apply_weight_decay=False)
         )
+
+        self.decoder = nn.Sequential(*decoder_blocks)
 
         self.to(self.device, self.dtype)
 
@@ -151,12 +156,7 @@ class DeepSAE(nn.Module):
 
         feature_acts = self.sparse_encoder_block(resid)
 
-        resid = resid_pre = self.hidden_decoder_blocks[0](feature_acts)
-        for block in self.hidden_decoder_blocks[1:]:
-            resid = block(resid)
-        resid += resid_pre
-
-        reconstructed = self.final_decoder_block(resid)
+        reconstructed = self.decoder(feature_acts)
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
@@ -198,14 +198,12 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        # Keep final decoder layer weights unit norm in each row
-        if hasattr(self.decoder[-1], "weight"):
-            w = self.decoder[-1].weight
-            w_normed = w / w.norm(dim=-1, keepdim=True)
-            if w.grad is not None:
-                w_dec_grad_proj = (w.grad * w_normed).sum(-1, keepdim=True) * w_normed
-                w.grad -= w_dec_grad_proj
-            w.data = w_normed
+        w = self.decoder[-1].weight
+        w_normed = w / w.norm(dim=-1, keepdim=True)
+        if w.grad is not None:
+            w_dec_grad_proj = (w.grad * w_normed).sum(-1, keepdim=True) * w_normed
+            w.grad -= w_dec_grad_proj
+        w.data = w_normed
 
     def save(self, architecture_name, model_id=None, save_to_s3=False):
         """
@@ -236,8 +234,8 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def resample_sparse_features(self, idx):
-        logging.info("Resampling sparse features...")
-        enc_layer = self.sparse_layer
+        logging.info(f"Resampling sparse features {idx.sum().item()}")
+        enc_layer = self.sparse_encoder_block[0]
         dec_layer = self.decoder[0]
         new_W_enc = torch.zeros_like(enc_layer.weight)
         new_W_dec = torch.zeros_like(dec_layer.weight)
@@ -252,5 +250,5 @@ class DeepSAE(nn.Module):
 
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)
-        self.device = self.sparse_layer.weight.device
-        self.dtype = self.sparse_layer.weight.dtype
+        self.device = self.sparse_encoder_block[0].weight.device
+        self.dtype = self.sparse_encoder_block[0].weight.dtype

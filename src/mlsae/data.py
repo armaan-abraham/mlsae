@@ -16,7 +16,7 @@ from datasets import load_dataset
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
-from mlsae.config import DataConfig, data_cfg, DTYPES
+from mlsae.config import DTYPES, DataConfig, data_cfg
 from mlsae.worker import TaskType
 
 this_dir = Path(__file__).parent

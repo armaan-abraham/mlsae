@@ -1,10 +1,11 @@
 import enum
+import logging
 
 import torch
 import torch.multiprocessing as mp
 import transformer_lens
 
-from mlsae.config import data_cfg, train_cfg, DTYPES
+from mlsae.config import DTYPES, data_cfg, train_cfg
 
 
 class TaskType(enum.Enum):
@@ -15,6 +16,7 @@ class TaskType(enum.Enum):
 
 def worker(device_id: int, tasks: mp.Queue, results: mp.Queue):
     device = f"cuda:{device_id}"
+    logging.info(f"Starting worker on device {device}")
 
     local_llm = transformer_lens.HookedTransformer.from_pretrained(
         data_cfg.model_name, device="cpu"
@@ -116,7 +118,7 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
         }
 
         if (model_entry["n_iter"] + 1) % train_cfg.measure_dead_over_n_batches == 0:
-            dead_features = model_entry["act_freq_history"] == 0
+            dead_features = model_entry["act_freq_history"] < 50
 
             if (
                 model_entry["n_iter"] + 1

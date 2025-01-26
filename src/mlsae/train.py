@@ -6,11 +6,8 @@ from dataclasses import dataclass, field
 import torch
 import torch.multiprocessing as mp
 import tqdm
-import wandb
 
-from mlsae.data import Buffer, StaticBuffer, data_cfg
-from mlsae.model import DeepSAE
-from mlsae.worker import TaskType, worker
+import wandb
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,9 +15,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-from mlsae.config import train_cfg
-from mlsae.data import Buffer, StaticBuffer, data_cfg
+from mlsae.config import data_cfg, train_cfg
+from mlsae.data import Buffer
 from mlsae.model import DeepSAE
+from mlsae.worker import TaskType, worker
 
 
 def main():
