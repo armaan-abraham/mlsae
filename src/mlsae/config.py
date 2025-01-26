@@ -91,7 +91,7 @@ class TrainConfig:
     num_tokens: int = int(3e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    save_to_s3: bool = False
+    save_to_s3: bool = True
 
     measure_dead_over_n_batches: int = 15
     resample_dead_every_n_batches: int = 360

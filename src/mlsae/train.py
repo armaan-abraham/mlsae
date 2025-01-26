@@ -137,6 +137,10 @@ def main():
                 wandb.log(log_dict)
 
     finally:
+        # Signal workers to stop
+        for _ in workers:
+            tasks_queue.put(None)
+
         logging.info("Saving all models...")
         for entry in autoencoders:
             try:
@@ -145,9 +149,6 @@ def main():
                 logging.error(f"Error saving {entry['name']}: {e}")
         wandb.finish()
 
-        # Signal workers to stop, then join
-        for _ in workers:
-            tasks_queue.put(None)
         for w in workers:
             w.join()
 

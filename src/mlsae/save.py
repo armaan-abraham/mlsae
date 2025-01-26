@@ -4,6 +4,7 @@ from pathlib import Path
 import boto3
 import petname
 import torch
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from mlsae.data import DTYPES
@@ -58,6 +59,7 @@ def save_model(
 
     # 3) Optionally save to S3
     if save_to_s3 and S3_BUCKET is not None:
+        print(f"Saving model '{model_id}' for architecture '{architecture_name}' to S3")
         pt_local_path = str(save_path / f"{model_id}.pt")
         cfg_local_path = str(save_path / f"{model_id}_cfg.json")
 
@@ -74,8 +76,15 @@ def save_model(
 
         s3_client = boto3.client("s3")
         try:
-            s3_client.upload_file(pt_local_path, S3_BUCKET, key_pt)
+            print(f"Uploading {cfg_local_path} to {S3_BUCKET}/{key_cfg}")
             s3_client.upload_file(cfg_local_path, S3_BUCKET, key_cfg)
+
+            print(f"Uploading {pt_local_path} to {S3_BUCKET}/{key_pt}")
+            config = TransferConfig(
+                multipart_threshold=100 * 1024**2, max_concurrency=1
+            )
+
+            s3_client.upload_file(pt_local_path, S3_BUCKET, key_pt, Config=config)
             print(
                 f"Uploaded '{model_id}' of {architecture_name} to S3 bucket '{S3_BUCKET}'."
             )
