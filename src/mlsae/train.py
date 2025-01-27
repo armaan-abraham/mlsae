@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 import torch
 import torch.multiprocessing as mp
 import tqdm
-
 import wandb
 
 logging.basicConfig(
@@ -53,7 +52,7 @@ def main():
             act_size=data_cfg.act_size,
             enc_dtype=data_cfg.enc_dtype,
             device="cpu",
-            l1_lambda=arch_dict["l1_lambda"],
+            topk=arch_dict["topk"],
             name=arch_dict["name"],
         )
         optimizer = torch.optim.SGD(

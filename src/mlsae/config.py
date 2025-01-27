@@ -98,16 +98,15 @@ class TrainConfig:
 
 
 train_cfg = TrainConfig()
-l1_lambdas = [0.5, 1, 20]
+topk = [32, 128, 512]
 archs = []
-for l1_lambda in l1_lambdas:
+for topk in topk:
     for arch in train_cfg.architectures:
         arch = deepcopy(arch)
-        arch["l1_lambda"] = l1_lambda
-        arch["name"] = f"{arch['name']}.{l1_lambda}"
+        arch["topk"] = topk
+        arch["name"] = f"{arch['name']}.{topk}"
         archs.append(arch)
 train_cfg.architectures = archs
-
 
 data_cfg = DataConfig()
 

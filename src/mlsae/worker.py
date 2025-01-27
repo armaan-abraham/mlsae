@@ -78,7 +78,8 @@ def model_step(model_entry, acts):
     assert (
         acts.device == autoenc.device
     ), f"Acts on device {acts.device}, expected {autoenc.device}"
-    loss, mse_loss, l1_loss, feature_acts, _ = autoenc(acts)
+
+    loss, feature_acts, _ = autoenc(acts)
     loss.backward()
     autoenc.make_decoder_weights_and_grad_unit_norm()
     optimizer.step()
@@ -86,8 +87,6 @@ def model_step(model_entry, acts):
 
     return {
         "loss": loss.item(),
-        "mse_loss": mse_loss.item(),
-        "l1_loss": l1_loss.item(),
         "feature_acts": feature_acts.detach(),
     }
 
@@ -110,8 +109,6 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
         metrics = {
             "arch_name": model_entry["name"],
             "loss": step_res["loss"],
-            "mse_loss": step_res["mse_loss"],
-            "l1_loss": step_res["l1_loss"],
             "act_freq": act_freq_batch.sum().item(),
             "n_iter": model_entry["n_iter"],
         }

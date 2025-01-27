@@ -12,6 +12,27 @@ from mlsae.data import DTYPES
 model_dir = Path(__file__).parent / "checkpoints"
 
 
+class TopKActivation(nn.Module):
+    """
+    A custom activation that keeps only the top k values along dim=1
+    (for each row in the batch), zeroing out the rest.
+    """
+
+    def __init__(self, k: int):
+        super().__init__()
+        self.k = k
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # If k >= number of features, do nothing
+        if self.k >= x.size(1):
+            return x
+        # Otherwise, keep only top k
+        topk_vals, topk_idx = torch.topk(x, self.k, dim=1)
+        mask = torch.zeros_like(x)
+        mask.scatter_(1, topk_idx, 1.0)
+        return x * mask
+
+
 class DeepSAE(nn.Module):
     def __init__(
         self,
@@ -22,7 +43,7 @@ class DeepSAE(nn.Module):
         name: str = None,
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
-        l1_lambda: float = 0.1,
+        topk: int = 16,
     ):
         super().__init__()
 
@@ -36,12 +57,10 @@ class DeepSAE(nn.Module):
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device = str(device)
-        self.l1_lambda = l1_lambda
-
-        # Indicates whether we're tracking global stats of feature activations
+        self.topk = topk  # save topk
         self.track_acts_stats = False
 
-        # For tracking global stats of feature activations if enabled
+        # Tracking stats
         self.acts_sum = 0.0
         self.acts_sq_sum = 0.0
         self.acts_elem_count = 0
@@ -49,11 +68,11 @@ class DeepSAE(nn.Module):
         logging.info(f"Encoder dims: {self.encoder_dims}")
         logging.info(f"Decoder dims: {self.decoder_dims}")
         logging.info(f"Sparse dim: {self.sparse_dim}")
-        logging.info(f"L1 lambda: {self.l1_lambda}")
+        logging.info(f"TopK: {self.topk}")
         logging.info(f"Device: {self.device}")
         logging.info(f"Dtype: {self.dtype}")
 
-        # Parameter groups for L2: stored in class-level lists
+        # Parameter groups for L2
         self.params_with_decay = []
         self.params_no_decay = []
 
@@ -77,6 +96,7 @@ class DeepSAE(nn.Module):
                 in_dim, self.sparse_dim, apply_weight_decay=False
             ),
             nn.ReLU(),
+            TopKActivation(self.topk),
         )
 
         # --------------------------------------------------------
@@ -161,9 +181,7 @@ class DeepSAE(nn.Module):
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
 
-        # L1 penalty on feature activations
-        l1_loss = self.l1_lambda * feature_acts.abs().mean()
-        loss = mse_loss + l1_loss
+        loss = mse_loss
 
         # Optionally track activation stats and MSE
         if self.track_acts_stats:
@@ -175,7 +193,7 @@ class DeepSAE(nn.Module):
             self.mse_sum += mse_loss.item()
             self.mse_count += 1
 
-        return loss, mse_loss, l1_loss, feature_acts, reconstructed
+        return loss, feature_acts, reconstructed
 
     def get_activation_stats(self):
         """

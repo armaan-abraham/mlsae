@@ -49,7 +49,7 @@ def save_model(
         "sparse_dim": model.sparse_dim,
         "act_size": model.act_size,
         "enc_dtype": model.enc_dtype,
-        "l1_lambda": model.l1_lambda,
+        "topk": model.topk,
         "name": model.name,
     }
     with open(save_path / f"{model_id}_cfg.json", "w") as f:
@@ -162,7 +162,7 @@ def load_model(
         ],
         act_size=config_dict["act_size"],
         enc_dtype=config_dict["enc_dtype"],
-        l1_lambda=config_dict["l1_lambda"],
+        topk=config_dict["topk"],
         name=config_dict["name"],
     )
 
