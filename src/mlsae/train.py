@@ -16,7 +16,7 @@ logging.basicConfig(
 
 from mlsae.config import data_cfg, train_cfg
 from mlsae.data import Buffer
-from mlsae.model import DeepSAE
+from mlsae.model import DeepSAE, SparseAdam
 from mlsae.worker import TaskType, worker
 
 
@@ -53,9 +53,10 @@ def main():
             enc_dtype=data_cfg.enc_dtype,
             device="cpu",
             topk=arch_dict["topk"],
+            act_l2_coeff=arch_dict["act_l2_coeff"],
             name=arch_dict["name"],
         )
-        optimizer = torch.optim.SGD(
+        optimizer = SparseAdam(
             autoenc.get_param_groups(weight_decay=arch_dict["weight_decay"]),
             lr=arch_dict["lr"],
         )

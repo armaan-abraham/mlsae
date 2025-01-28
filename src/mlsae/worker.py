@@ -79,7 +79,7 @@ def model_step(model_entry, acts):
         acts.device == autoenc.device
     ), f"Acts on device {acts.device}, expected {autoenc.device}"
 
-    loss, feature_acts, _ = autoenc(acts)
+    loss, l2_loss, feature_acts, _ = autoenc(acts)
     loss.backward()
     autoenc.make_decoder_weights_and_grad_unit_norm()
     optimizer.step()
@@ -87,6 +87,7 @@ def model_step(model_entry, acts):
 
     return {
         "loss": loss.item(),
+        "l2_loss": l2_loss.item(),
         "feature_acts": feature_acts.detach(),
     }
 
@@ -96,6 +97,10 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
     static_buffer = task_data["static_buffer"]
     model_entry["model"].to(device)
     model_entry["act_freq_history"] = model_entry["act_freq_history"].to(device)
+    for param_group in model_entry["optimizer"].state.values():
+        for state_key, state_value in param_group.items():
+            if torch.is_tensor(state_value):
+                param_group[state_key] = state_value.to(device)
 
     metrics_list = []
 
@@ -109,6 +114,7 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
         metrics = {
             "arch_name": model_entry["name"],
             "loss": step_res["loss"],
+            "l2_loss": step_res["l2_loss"],
             "act_freq": act_freq_batch.sum().item(),
             "n_iter": model_entry["n_iter"],
         }
@@ -131,6 +137,10 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
         metrics_list.append(metrics)
         model_entry["n_iter"] += 1
 
+    for param_group in model_entry["optimizer"].state.values():
+        for state_key, state_value in param_group.items():
+            if torch.is_tensor(state_value):
+                param_group[state_key] = state_value.cpu()
     # move back to CPU and return
     model_entry["model"].to("cpu")
     model_entry["act_freq_history"] = model_entry["act_freq_history"].to("cpu")

@@ -8,8 +8,8 @@ import transformer_lens
 @dataclass
 class DataConfig:
     seed: int = 49
-    buffer_batch_size_tokens: int = 65536
-    buffer_size_buffer_batch_size_mult: int = 32
+    buffer_batch_size_tokens: int = 131072
+    buffer_size_buffer_batch_size_mult: int = 16
     seq_len: int = 128
     model_batch_size_seqs: int = 256
     enc_dtype: str = "fp32"
@@ -58,32 +58,100 @@ class DataConfig:
 class TrainConfig:
     architectures: list = field(
         default_factory=lambda: [
-            # Shallow
+            # 0-0
             {
-                "name": "0-0",
+                "name": "0-0.0",
                 "encoder_dim_mults": [],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
-                "weight_decay": 3e-4,
-                "lr": 2e-3,
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 1e-2,
             },
-            # 1 Encoder layer
             {
-                "name": "1-0",
+                "name": "0-0.1",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [],
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 3e-2,
+            },
+            {
+                "name": "0-0.2",
+                "encoder_dim_mults": [],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [],
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 6e-2,
+            },
+
+            # 1-0
+            {
+                "name": "1-0.0",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
-                "weight_decay": 5e-5,
-                "lr": 4e-4,
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 1e-2,
             },
-            # 1 Encoder layer, 1 Decoder layer
             {
-                "name": "1-1",
+                "name": "1-0.1",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [],
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 3e-2,
+            },
+            {
+                "name": "1-0.2",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [],
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 6e-2,
+            },
+
+            # 1-1
+            {
+                "name": "1-1.0",
                 "encoder_dim_mults": [1],
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
-                "weight_decay": 5e-5,
-                "lr": 2e-4,
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 1e-2,
+            },
+            {
+                "name": "1-1.1",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [1],
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 3e-2,
+            },
+            {
+                "name": "1-1.2",
+                "encoder_dim_mults": [1],
+                "sparse_dim_mult": 16,
+                "decoder_dim_mults": [1],
+                "weight_decay": 1e-4,
+                "lr": 1e-4,
+                "topk": 64,
+                "act_l2_coeff": 6e-2,
             },
         ]
     )
@@ -94,20 +162,10 @@ class TrainConfig:
     save_to_s3: bool = True
 
     measure_dead_over_n_batches: int = 15
-    resample_dead_every_n_batches: int = 360
+    resample_dead_every_n_batches: int = 15e9
 
 
 train_cfg = TrainConfig()
-topk = [32, 128, 512]
-archs = []
-for topk in topk:
-    for arch in train_cfg.architectures:
-        arch = deepcopy(arch)
-        arch["topk"] = topk
-        arch["name"] = f"{arch['name']}.{topk}"
-        archs.append(arch)
-train_cfg.architectures = archs
-
 data_cfg = DataConfig()
 
 assert (

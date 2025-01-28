@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mlsae.data import DTYPES
+import math
 
 model_dir = Path(__file__).parent / "checkpoints"
 
@@ -44,6 +45,7 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
         topk: int = 16,
+        act_l2_coeff: float = 0.,
     ):
         super().__init__()
 
@@ -57,7 +59,8 @@ class DeepSAE(nn.Module):
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device = str(device)
-        self.topk = topk  # save topk
+        self.topk = topk
+        self.act_l2_coeff = act_l2_coeff
         self.track_acts_stats = False
 
         # Tracking stats
@@ -180,8 +183,9 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
+        l2_loss = (feature_acts ** 2).mean() * self.act_l2_coeff
 
-        loss = mse_loss
+        loss = mse_loss + l2_loss
 
         # Optionally track activation stats and MSE
         if self.track_acts_stats:
@@ -193,7 +197,7 @@ class DeepSAE(nn.Module):
             self.mse_sum += mse_loss.item()
             self.mse_count += 1
 
-        return loss, feature_acts, reconstructed
+        return loss, l2_loss, feature_acts, reconstructed
 
     def get_activation_stats(self):
         """
@@ -270,3 +274,72 @@ class DeepSAE(nn.Module):
         super().to(*args, **kwargs)
         self.device = self.sparse_encoder_block[0].weight.device
         self.dtype = self.sparse_encoder_block[0].weight.dtype
+
+
+class SparseAdam(torch.optim.Optimizer):
+    """
+    This optimizer performs Adam-style updates but only on gradient elements
+    that are nonzero. It does not rely on torch sparse tensors.
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, maximize=False):
+        defaults = dict(lr=lr, betas=betas, eps=eps, maximize=maximize)
+        super().__init__(params, defaults)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            beta1, beta2 = group["betas"]
+            eps = group["eps"]
+            maximize = group["maximize"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                if grad.is_sparse:
+                    # This version is intended for dense gradients.
+                    # Skip or raise an error as needed.
+                    raise RuntimeError(
+                        "DenseMaskAdam does not handle sparse gradients."
+                    )
+
+                # Identify nonzero locations in the gradient
+                mask = grad != 0
+
+                # State initialization
+                state = self.state[p]
+                if len(state) == 0:
+                    state["step"] = 0
+                    state["exp_avg"] = torch.zeros_like(p.data)
+                    state["exp_avg_sq"] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+
+                state["step"] += 1
+                step = state["step"]
+
+                # Update moments for masked entries only
+                exp_avg[mask] = exp_avg[mask].mul_(beta1).add_(grad[mask], alpha=1 - beta1)
+                exp_avg_sq[mask] = exp_avg_sq[mask].mul_(beta2).addcmul_(grad[mask], grad[mask], value=1 - beta2)
+
+                # Bias correction
+                bias_correction1 = 1 - beta1 ** step
+                bias_correction2 = 1 - beta2 ** step
+
+                # Compute step size
+                denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+                step_size = lr / bias_correction1
+
+                # Update parameters at masked locations
+                if not maximize:
+                    p.data[mask] -= step_size * (exp_avg[mask] / denom[mask])
+                else:
+                    p.data[mask] += step_size * (exp_avg[mask] / denom[mask])
+
+        return loss

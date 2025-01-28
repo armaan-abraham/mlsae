@@ -50,6 +50,7 @@ def save_model(
         "act_size": model.act_size,
         "enc_dtype": model.enc_dtype,
         "topk": model.topk,
+        "act_l2_coeff": model.act_l2_coeff,
         "name": model.name,
     }
     with open(save_path / f"{model_id}_cfg.json", "w") as f:
@@ -163,6 +164,7 @@ def load_model(
         act_size=config_dict["act_size"],
         enc_dtype=config_dict["enc_dtype"],
         topk=config_dict["topk"],
+        act_l2_coeff=config_dict["act_l2_coeff"],
         name=config_dict["name"],
     )
 
