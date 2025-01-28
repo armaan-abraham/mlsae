@@ -183,7 +183,7 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        l2_loss = (feature_acts ** 2).mean() * self.act_l2_coeff
+        l2_loss = (feature_acts ** 2).mean() * (self.act_l2_coeff / self.topk)
 
         loss = mse_loss + l2_loss
 
