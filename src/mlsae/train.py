@@ -1,5 +1,3 @@
-# train.py
-
 import logging
 from dataclasses import dataclass, field
 
@@ -77,17 +75,18 @@ def main():
 
     try:
         for outer_idx in tqdm.trange(num_buffer_refreshes, desc="Buffer refreshes"):
-            # Refresh buffer
+            # Refresh buffer -> acts are placed in shared memory
             buffer.refresh()
 
-            # For each model, clone the static buffer and enqueue a task
+            # For each model, fork a local copy of the buffer object
+            # so that each worker’s pointer is reset, but data is shared
             for model_entry in autoencoders:
                 logging.info(f"Enqueuing task for {model_entry['name']}")
-                buf_clone = buffer.static_buffer.clone()
+                buf_view = buffer.static_buffer.clone()  # <-- CHANGED (no large copy)
                 tasks_queue.put(
                     (
                         TaskType.TRAIN,
-                        {"model_entry": model_entry, "static_buffer": buf_clone},
+                        {"model_entry": model_entry, "static_buffer": buf_view},
                     )
                 )
 

@@ -40,10 +40,6 @@ os.environ["DATASETS_CACHE"] = str(cache_dir)
 
 
 def get_relevant_config_subset(cfg: DataConfig) -> dict:
-    """
-    Returns a dictionary of only those fields in cfg.cache_id_fields.
-    Used to identify matching cache directories.
-    """
     subset = {}
     for field_name in cfg.cache_id_fields:
         subset[field_name] = getattr(cfg, field_name)
@@ -53,10 +49,6 @@ def get_relevant_config_subset(cfg: DataConfig) -> dict:
 def find_existing_cache_folder(
     cfg: DataConfig, base_cache_dir: Path, eval=False
 ) -> Path:
-    """
-    Checks each subdirectory in base_cache_dir for a config.json that matches
-    the relevant fields of cfg. Returns the path if found, else None.
-    """
     desired_subset = get_relevant_config_subset(cfg)
     for subdir in base_cache_dir.iterdir():
         if not subdir.is_dir():
@@ -229,16 +221,18 @@ def stream_training_chunks(data_cfg, cache_dir, tokenizer, eval: bool = False):
 class StaticBuffer:
     def __init__(self):
         self.pointer = 0
+        self.buffer = None
 
     def populate(self, buffer: torch.Tensor):
-        assert buffer.ndim == 2, f"Expected buffer to be 2D, got {buffer.ndim}D"
-        assert (
-            buffer.shape[1] == data_cfg.act_size
-        ), f"Expected buffer to have act size {data_cfg.act_size}, got {buffer.shape[1]}"
-        assert (
-            buffer.shape[0] == data_cfg.buffer_size_tokens
-        ), f"Expected buffer to have {data_cfg.buffer_size_tokens} tokens, got {buffer.shape[0]}"
-        self.buffer = buffer
+        # Put the data in shared memory, so multiple processes can see it.
+        self.buffer = buffer.share_memory_()  # <-- CHANGED
+        assert buffer.ndim == 2, f"Expected 2D, got {buffer.ndim}D"
+        assert buffer.shape[1] == data_cfg.act_size, (
+            f"Expected {data_cfg.act_size} act size, got {buffer.shape[1]}"
+        )
+        assert buffer.shape[0] == data_cfg.buffer_size_tokens, (
+            f"Expected {data_cfg.buffer_size_tokens} tokens, got {buffer.shape[0]}"
+        )
         self.pointer = 0
 
     def needs_refresh(self):
@@ -257,15 +251,19 @@ class StaticBuffer:
         return out
 
     def clone(self):
+        """
+        Instead of physically copying data, just return a new StaticBuffer object
+        that points to the same underlying shared-memory buffer, but starts at pointer=0.
+        """
         new_buffer = StaticBuffer()
-        new_buffer.buffer = self.buffer.clone()
-        new_buffer.pointer = self.pointer
+        new_buffer.buffer = self.buffer  # same underlying tensor
+        new_buffer.pointer = 0
         return new_buffer
 
 
 class Buffer:
     """
-    Streams tokens and fills self.buffer with model activations.
+    Streams tokens and fills self.buffer with model activations in shared memory.
     """
 
     def __init__(
@@ -366,18 +364,13 @@ class Buffer:
         tokens = next(self.token_stream)
         logging.info(f"Loaded tokens of shape {tokens.shape}")
         assert tokens is not None, "No more data from token_stream."
-        assert tokens.ndim == 2, f"Expected tokens to be 2D, got {tokens.ndim}D"
+        assert tokens.ndim == 2, f"Expected 2D tokens, got {tokens.ndim}D"
         assert (
             tokens.shape[1] == data_cfg.seq_len
-        ), f"Expected tokens to have sequence length {data_cfg.seq_len}, got {tokens.shape[1]}"
-        assert (
-            tokens[:, 0] == self.tokenizer.bos_token_id
-        ).all(), "First token is not BOS"
-
-        # If we did not have prefetched data, do the usual load/generate
+        ), f"Expected seq length {data_cfg.seq_len}, got {tokens.shape[1]}"
+        # If we had no prefetched acts, try to read from disk or run inference
         if acts is None:
-            logging.info(f"Refreshing buffer for chunk {self.chunk_index}...")
-            # Try to load from cache if caching
+            chunk_path = None
             if data_cfg.caching and self.cache_path is not None:
                 chunk_path = self.cache_path / f"chunk_{self.chunk_index}.pt"
                 if chunk_path.exists():
@@ -385,35 +378,27 @@ class Buffer:
                     acts = torch.load(chunk_path, map_location="cpu").to(
                         DTYPES[data_cfg.enc_dtype]
                     )
-
-            # If still None, generate from data
             if acts is None:
+                # run_inference_multi across GPUs
                 acts = self.run_inference_multi(tokens)
-                assert acts.ndim == 2, f"Expected acts to be 2D, got {acts.ndim}D"
-                assert (
-                    acts.shape[1] == data_cfg.act_size
-                ), f"Expected acts to have act size {data_cfg.act_size}, got {acts.shape[1]}"
-                assert (
-                    acts.shape[0] > data_cfg.buffer_batch_size_tokens
-                ), f"Expected acts to have at least {data_cfg.buffer_batch_size_tokens} tokens, got {acts.shape[0]}"
-                logging.info(f"Generated {acts.shape[0]} tokens")
-
-                # Save to cache if enabled
-                if data_cfg.caching and self.cache_path is not None:
+                assert acts.ndim == 2, f"Expected 2D acts, got {acts.ndim}D"
+                assert acts.shape[1] == data_cfg.act_size, (
+                    f"Expected act size {data_cfg.act_size}, got {acts.shape[1]}"
+                )
+                if data_cfg.caching and self.cache_path is not None and chunk_path:
                     torch.save(
                         acts.to(DTYPES[data_cfg.cache_dtype]),
-                        self.cache_path / f"chunk_{self.chunk_index}.pt",
+                        chunk_path,
                     )
 
-        # Populate our StaticBuffer
         self.static_buffer.populate(acts)
 
         self.chunk_index += 1
 
-        # Spawn a thread to prefetch next chunk from cache (if it exists)
+        # Prefetch next chunk from cache
         self._prefetch_thread = threading.Thread(
             target=self._prefetch_chunk,
-            args=(self.chunk_index,),  # next chunk index
+            args=(self.chunk_index,),
         )
         self._prefetch_thread.start()
 

@@ -25,6 +25,8 @@ def worker(device_id: int, tasks: mp.Queue, results: mp.Queue):
     try:
         while True:
             task = tasks.get()
+            if task is None:
+                break
             task_type, task_data = task
             if task_type == TaskType.TERMINATE:
                 break
@@ -104,6 +106,7 @@ def task_train(results: mp.Queue, device: str, task_data: dict):
 
     metrics_list = []
 
+    # Read from the shared buffer until it's exhausted (from pointer=0)
     while not static_buffer.needs_refresh():
         acts = static_buffer.next().to(device)
         step_res = model_step(model_entry, acts)
