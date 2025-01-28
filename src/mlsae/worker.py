@@ -1,11 +1,15 @@
 import enum
 import logging
+import cProfile
+import pstats
+from io import StringIO
 
 import torch
 import torch.multiprocessing as mp
 import transformer_lens
 
 from mlsae.config import DTYPES, data_cfg, train_cfg
+from line_profiler import profile
 
 
 class TaskType(enum.Enum):
@@ -22,6 +26,9 @@ def worker(device_id: int, tasks: mp.Queue, results: mp.Queue):
         data_cfg.model_name, device="cpu"
     ).to(DTYPES[data_cfg.enc_dtype])
 
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     try:
         while True:
             task = tasks.get()
@@ -37,8 +44,20 @@ def worker(device_id: int, tasks: mp.Queue, results: mp.Queue):
     except Exception as e:
         results.put(e)
         raise
+    finally:
+        profiler.disable()
+        
+        # Option 1: print stats in the child process log
+        s = StringIO()
+        ps = pstats.Stats(profiler, stream=s).sort_stats("cumtime")
+        ps.print_stats()
+        logging.info(f"Worker {device_id} profile:\n{s.getvalue()}")
+
+        # Option 2: dump to .prof file to analyze later
+        profiler.dump_stats(f"worker_device_{device_id}.prof")
 
 
+@profile
 def task_generate(
     results: mp.Queue,
     device: str,
@@ -71,6 +90,7 @@ def task_generate(
     local_llm.to("cpu")
 
 
+@profile
 def model_step(model_entry, acts):
     autoenc = model_entry["model"]
     optimizer = model_entry["optimizer"]
@@ -92,6 +112,7 @@ def model_step(model_entry, acts):
     }
 
 
+@profile
 def task_train(results: mp.Queue, device: str, task_data: dict):
     model_entry = task_data["model_entry"]
     static_buffer = task_data["static_buffer"]

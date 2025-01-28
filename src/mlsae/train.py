@@ -7,6 +7,7 @@ import torch
 import torch.multiprocessing as mp
 import tqdm
 import wandb
+from line_profiler import profile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +21,8 @@ from mlsae.model import DeepSAE, SparseAdam
 from mlsae.worker import TaskType, worker
 
 
+
+@profile
 def main():
     wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
     wandb.config.update(train_cfg)
