@@ -145,10 +145,10 @@ class Trainer:
                     logging.info("Got result")
                     self.handle_result(result)
                 logging.info(
-                    f"Token read queue size: {self.tokens_read_queue.qsize()}, "
-                    f"Token write queue size: {self.tokens_write_queue.qsize()}, "
-                    f"Act read queue size: {self.acts_read_queue.qsize()}, "
-                    f"Act write queue size: {self.acts_write_queue.qsize()}, "
+                    f"Token read queue: {list(self.tokens_read_queue.queue)}, "
+                    f"Token write queue: {list(self.tokens_write_queue.queue)}, "
+                    f"Act read queue: {list(self.acts_read_queue.queue)}, "
+                    f"Act write queue: {list(self.acts_write_queue.queue)}, "
                     f"GPU outstanding tasks: {self.n_gpu_outstanding_tasks}, "
                     f"CPU worker busy: {self.cpu_worker_busy}, "
                     f"Training needed for model idx: {self.training_needed_for_model_idx}, "
