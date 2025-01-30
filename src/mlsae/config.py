@@ -28,7 +28,6 @@ class DataConfig:
     n_token_blocks: int = 10
     get_token_blocks_threshold: int = 4
     n_act_blocks: int = 5
-    get_act_blocks_threshold: int = 2
 
     @property
     def act_block_size_tokens(self) -> int:

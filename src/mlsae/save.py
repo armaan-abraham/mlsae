@@ -150,9 +150,13 @@ def load_model(
         config_dict = json.load(f)
 
     for dim in config_dict["encoder_dims"]:
-        assert dim % config_dict["act_size"] == 0, f"Encoder dim {dim} is not divisible by act_size {config_dict['act_size']}"
+        assert (
+            dim % config_dict["act_size"] == 0
+        ), f"Encoder dim {dim} is not divisible by act_size {config_dict['act_size']}"
     for dim in config_dict["decoder_dims"]:
-        assert dim % config_dict["act_size"] == 0, f"Decoder dim {dim} is not divisible by act_size {config_dict['act_size']}"
+        assert (
+            dim % config_dict["act_size"] == 0
+        ), f"Decoder dim {dim} is not divisible by act_size {config_dict['act_size']}"
     new_model = cls(
         encoder_dim_mults=[
             dim // config_dict["act_size"] for dim in config_dict["encoder_dims"]

@@ -34,8 +34,8 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
             # bubbled up.
             token_block = next(token_stream)
             assert (
-                token_block.shape[0] == data_cfg.act_block_size_seqs
-            ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {token_block.shape[0]}"
+                token_block.shape == (data_cfg.act_block_size_seqs, data_cfg.seq_len)
+            ), f"Expected {(data_cfg.act_block_size_seqs, data_cfg.seq_len)}, got {token_block.shape}"
             shared_memory.token_blocks[token_block_idx].copy_(token_block)
             results.put(
                 (
@@ -132,6 +132,44 @@ def init_optimizer(model: DeepSAE, model_idx: int):
     return SparseAdam(model.get_param_groups(weight_decay=weight_decay), lr=lr)
 
 
+def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Tensor):
+    """
+    Zeros out the Adam moments for re-initialized rows/columns in the sparse encoder's
+    weight/bias and the first decoder layer's weight. This avoids using stale moment
+    estimates for brand-new features.
+    """
+    model.resample_sparse_features(idx)
+
+    enc_layer = model.sparse_encoder_block[0]  # Linear for the sparse encoder
+    dec_layer = model.decoder[0]  # First Linear in the decoder
+
+    # We do not reset the step counter, but we reset the momentum
+    with torch.no_grad():
+        for group in optimizer.param_groups:
+            for p in group["params"]:
+                # Safely retrieve state
+                state = optimizer.state.get(p, {})
+                exp_avg = state.get("exp_avg", None)
+                exp_avg_sq = state.get("exp_avg_sq", None)
+                if exp_avg is None or exp_avg_sq is None:
+                    continue  # Some params may not have momentum buffers yet
+
+                if p is enc_layer.weight:
+                    # shape: (sparse_dim, in_dim)
+                    exp_avg[idx, :] = 0
+                    exp_avg_sq[idx, :] = 0
+
+                elif p is enc_layer.bias:
+                    # shape: (sparse_dim)
+                    exp_avg[idx] = 0
+                    exp_avg_sq[idx] = 0
+
+                elif p is dec_layer.weight:
+                    # shape: (out_dim, sparse_dim)
+                    exp_avg[:, idx] = 0
+                    exp_avg_sq[:, idx] = 0
+
+
 def task_train(
     results: mp.Queue, device: str, task_data: dict, shared_memory: SharedMemory
 ):
@@ -176,7 +214,7 @@ def task_train(
             dead_features = act_freq_history == 0
 
             if (n_iter + 1) % train_cfg.resample_dead_every_n_batches == 0:
-                model.resample_sparse_features(dead_features)
+                resample_dead_features(optimizer, model, dead_features)
 
             metrics["dead_features"] = dead_features.float().sum().item()
             act_freq_history = torch.zeros(

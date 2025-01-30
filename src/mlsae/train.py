@@ -78,8 +78,6 @@ class Trainer:
         )
         self.cpu_worker.start()
 
-        self.train_task_outstanding = False
-
         # Two queues: act write queue and act read queue
         # Whatever indices are not in the read and write queue are currently being written to
         # If a block is done being read by all of the models, then add it to the write queue
@@ -104,8 +102,9 @@ class Trainer:
         for i in range(data_cfg.n_act_blocks):
             self.acts_write_queue.put(i)
 
-        self.act_block_idx_to_model_idx = defaultdict(set)
-        self.act_block_idx_to_train_iter = {}
+        self.training_needed_for_model_idx = set(range(len(train_cfg.architectures)))
+        self.training_completed_for_model_idx = set()
+        self.current_act_block_idx = None
 
         self.metrics_aggregator = []
 
@@ -116,12 +115,13 @@ class Trainer:
                     self.acts_write_queue.qsize() + self.acts_read_queue.qsize()
                     <= data_cfg.n_act_blocks
                 )
+                assert self.n_gpu_outstanding_tasks <= DEVICE_COUNT
                 if self.should_add_tokens_task():
                     self.add_tokens_task()
-                elif self.should_add_acts_task():
-                    self.add_acts_task()
                 elif self.should_add_train_task():
                     self.add_train_task()
+                elif self.should_add_acts_task():
+                    self.add_acts_task()
                 else:
                     result = self.results_queue.get()
                     self.handle_result(result)
@@ -143,12 +143,19 @@ class Trainer:
         self.cpu_worker_busy = True
 
     def should_add_acts_task(self):
-        if self.n_gpu_outstanding_tasks >= DEVICE_COUNT:
+        if (
+            self.n_gpu_outstanding_tasks == DEVICE_COUNT
+            or self.tokens_read_queue.empty()
+            or self.acts_write_queue.empty()
+        ):
             return False
         return (
-            self.acts_read_queue.qsize() < data_cfg.get_act_blocks_threshold
-            and not self.acts_write_queue.empty()
-            and not self.tokens_read_queue.empty()
+            # We are waiting on the generation of an act block to train models
+            (self.acts_read_queue.empty() and len(self.training_needed_for_model_idx) == len(train_cfg.architectures))
+
+            # We have a GPU to spare as other GPUs are busy training models but
+            # there are no more models to train for this iteration
+            or (not self.training_needed_for_model_idx and not self.acts_write_queue.empty())
         )
 
     def add_acts_task(self):
@@ -164,30 +171,27 @@ class Trainer:
         self.n_gpu_outstanding_tasks += 1
 
     def should_add_train_task(self):
-        if self.n_gpu_outstanding_tasks >= DEVICE_COUNT:
+        if self.n_gpu_outstanding_tasks == DEVICE_COUNT:
             return False
-        return not self.acts_read_queue.empty() and not self.train_task_outstanding
+        return not self.acts_read_queue.empty() and self.training_needed_for_model_idx
 
     def add_train_task(self):
-        # Allocate act block (read) to this task
-        act_block_idx = self.acts_read_queue.get(block=False)
-        assert len(self.act_block_idx_to_model_idx[act_block_idx]) == 0
-        for model_idx in range(len(train_cfg.architectures)):
-            task = (
-                TaskType.TRAIN,
-                {"model_idx": model_idx, "act_block_idx": act_block_idx},
-            )
-            self.gpu_tasks_queue.put(task)
-            # This seems weird, but it is not a bug that we are adding all of
-            # these tasks at once, potentially overshooting DEVICE_COUNT. The
-            # point of the DEVICE_COUNT check in should_add_train_task is not to
-            # ensure that there aren't more GPU-dependent tasks than there are
-            # GPUs in the task queue, but that we wait for results to get back
-            # before adding more GPU-dependent tasks.
-            self.n_gpu_outstanding_tasks += 1
-            self.act_block_idx_to_model_idx[act_block_idx].add(model_idx)
+        # If we haven't started training models for a new act block, we choose
+        # an act block to read from
+        if self.current_act_block_idx is None:
+            self.current_act_block_idx = self.acts_read_queue.get(block=False)
+            assert len(self.training_needed_for_model_idx) == len(train_cfg.architectures)
+
+        # Take one model that needs to be trained, and it to the task queue
+        model_idx = self.training_needed_for_model_idx.pop()
+        task = (
+            TaskType.TRAIN,
+            {"model_idx": model_idx, "act_block_idx": self.current_act_block_idx},
+        )
+        self.gpu_tasks_queue.put(task)
+
+        self.n_gpu_outstanding_tasks += 1
         self.train_iter += 1
-        self.train_task_outstanding = True
 
     @property
     def train_iter_done(self):
@@ -212,15 +216,22 @@ class Trainer:
     def handle_train_result(self, result_data):
         model_idx = result_data["model_idx"]
         act_block_idx = result_data["act_block_idx"]
-        self.act_block_idx_to_model_idx[act_block_idx].remove(model_idx)
-        if len(self.act_block_idx_to_model_idx[act_block_idx]) == 0:
+        self.training_completed_for_model_idx.add(model_idx)
+        should_log = False
+        if len(self.training_completed_for_model_idx) == len(train_cfg.architectures):
             self.acts_write_queue.put(act_block_idx)
-            self.train_task_outstanding = False
             self.pbar.update(1)
-        self.aggregate_and_log_metrics(result_data)
+            # Add models back to train idx
+            self.training_needed_for_model_idx = set(
+                range(len(train_cfg.architectures))
+            )
+            self.training_completed_for_model_idx = set()
+            self.current_act_block_idx = None
+            should_log = True
+        self.aggregate_and_log_metrics(result_data, should_log)
         self.n_gpu_outstanding_tasks -= 1
 
-    def aggregate_and_log_metrics(self, result_data):
+    def aggregate_and_log_metrics(self, result_data, should_log):
         metrics = result_data["metrics"]
         model_idx = result_data["model_idx"]
         if not self.metrics_aggregator:
@@ -235,7 +246,7 @@ class Trainer:
                     f"{train_cfg.architectures[model_idx]['name']}_{k}"
                 ] = v
 
-        if not self.train_task_outstanding:
+        if should_log:
             # All train tasks for this act block have been completed, log all
             # together
             for i, aggregate_metrics_for_batch in enumerate(self.metrics_aggregator):
