@@ -1,5 +1,3 @@
-# Multi-layer sparse autoencoders
-
-The superposition hypothesis might be bogus, but sparsity is good!
+# Deep sparse autoencoders
 
 ![](src/mlsae/results/output.png)
