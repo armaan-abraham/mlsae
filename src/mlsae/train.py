@@ -110,10 +110,14 @@ class Trainer:
 
         try:
             self.pbar = tqdm.tqdm(total=self.max_train_iter, desc="Training")
-            while self.train_iter_done < self.max_train_iter:
+            while self.train_iter < self.max_train_iter:
                 assert (
                     self.acts_write_queue.qsize() + self.acts_read_queue.qsize()
                     <= data_cfg.n_act_blocks
+                )
+                assert (
+                    self.tokens_read_queue.qsize() + self.tokens_write_queue.qsize()
+                    <= data_cfg.n_token_blocks
                 )
                 assert self.n_gpu_outstanding_tasks <= DEVICE_COUNT
                 if self.should_add_tokens_task():
@@ -131,10 +135,7 @@ class Trainer:
     def should_add_tokens_task(self):
         if self.cpu_worker_busy:
             return False
-        return (
-            self.tokens_read_queue.qsize() < data_cfg.get_token_blocks_threshold
-            and not self.tokens_write_queue.empty()
-        )
+        return not self.tokens_write_queue.empty()
 
     def add_tokens_task(self):
         token_block_idx = self.tokens_write_queue.get(block=False)
@@ -191,15 +192,6 @@ class Trainer:
         self.gpu_tasks_queue.put(task)
 
         self.n_gpu_outstanding_tasks += 1
-        self.train_iter += 1
-
-    @property
-    def train_iter_done(self):
-        # The number of indexed training tasks minus the number of outstanding
-        # training tasks
-        return self.train_iter - len(
-            [v for v in self.act_block_idx_to_model_idx.values() if len(v) > 0]
-        )
 
     def handle_tokens_result(self, result_data):
         token_block_idx = result_data["token_block_idx"]
@@ -221,6 +213,7 @@ class Trainer:
         if len(self.training_completed_for_model_idx) == len(train_cfg.architectures):
             self.acts_write_queue.put(act_block_idx)
             self.pbar.update(1)
+            self.train_iter += 1
             # Add models back to train idx
             self.training_needed_for_model_idx = set(
                 range(len(train_cfg.architectures))
@@ -259,7 +252,6 @@ class Trainer:
     def get_training_state(self):
         return {
             "cpu_worker_busy": self.cpu_worker_busy,
-            "train_iter_done": self.train_iter_done,
             "train_iter": self.train_iter,
             "n_gpu_outstanding_tasks": self.n_gpu_outstanding_tasks,
             "acts_read_queue_size": self.acts_read_queue.qsize(),
