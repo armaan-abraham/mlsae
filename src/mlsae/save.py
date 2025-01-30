@@ -7,7 +7,7 @@ import torch
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError, NoCredentialsError
 
-from mlsae.data import DTYPES
+from mlsae.config import DTYPES
 
 S3_BUCKET = "deep-sae"
 S3_PREFIX = "models"

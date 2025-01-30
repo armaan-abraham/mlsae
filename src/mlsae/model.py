@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mlsae.data import DTYPES
+from mlsae.config import DTYPES
 
 model_dir = Path(__file__).parent / "checkpoints"
 

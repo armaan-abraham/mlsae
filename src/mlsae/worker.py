@@ -38,7 +38,7 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
             assert (
                 token_block.shape == (data_cfg.act_block_size_seqs, data_cfg.seq_len)
             ), f"Expected {(data_cfg.act_block_size_seqs, data_cfg.seq_len)}, got {token_block.shape}"
-            shared_memory.token_blocks[token_block_idx].copy_(token_block)
+            shared_memory["token_blocks"][token_block_idx].copy_(token_block)
             results.put(
                 (
                     TaskType.TOKENS,
@@ -93,7 +93,7 @@ def task_generate(
     # generation and training
     local_llm.to(device)
     all_acts = []
-    token_block = shared_memory.token_blocks[task_data["token_block_idx"]]
+    token_block = shared_memory["token_blocks"][task_data["token_block_idx"]]
     assert (
         token_block.shape[0] == data_cfg.act_block_size_seqs
     ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {token_block.shape[0]}"
@@ -116,7 +116,7 @@ def task_generate(
                 all_acts.append(acts)
 
     acts_block = torch.cat(all_acts, dim=0)
-    shared_memory.act_blocks[task_data["act_block_idx"]].copy_(acts_block)
+    shared_memory["act_blocks"][task_data["act_block_idx"]].copy_(acts_block)
 
     results.put(
         (
@@ -181,12 +181,13 @@ def task_train(
     model_idx = task_data["model_idx"]
     act_block_idx = task_data["act_block_idx"]
 
-    model = shared_memory.models[model_idx].to(device)
+    model = shared_memory["models"][model_idx]
+    model.to(device)
     optimizer = init_optimizer(model, model_idx)
-    optimizer.copy_tensors_(shared_memory.optimizers[model_idx])
-    act_freq_history = shared_memory.act_freq_history[model_idx].to(device)
-    n_iter = shared_memory.n_iter[model_idx].to(device)
-    act_block = shared_memory.act_blocks[act_block_idx].to(device)
+    optimizer.copy_tensors_(shared_memory["optimizers"][model_idx])
+    act_freq_history = shared_memory["act_freq_history"][model_idx].to(device)
+    n_iter = shared_memory["n_iter"][model_idx].to(device)
+    act_block = shared_memory["act_blocks"][act_block_idx].to(device)
 
     assert (
         act_block.shape[0] == data_cfg.act_block_size_tokens
@@ -232,10 +233,10 @@ def task_train(
         n_iter += 1
 
     # update shared memory
-    shared_memory.act_freq_history[model_idx].copy_(act_freq_history)
-    shared_memory.n_iter[model_idx].copy_(n_iter)
-    shared_memory.optimizers[model_idx].copy_tensors_(optimizer)
-    shared_memory.models[model_idx].copy_tensors_(model)
+    shared_memory["act_freq_history"][model_idx].copy_(act_freq_history)
+    shared_memory["n_iter"][model_idx].copy_(n_iter)
+    shared_memory["optimizers"][model_idx].copy_tensors_(optimizer)
+    shared_memory["models"][model_idx].copy_tensors_(model)
 
     result_data = {
         "metrics": metrics_list,

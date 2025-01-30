@@ -30,7 +30,7 @@ class DataConfig:
 
     @property
     def act_block_size_tokens(self) -> int:
-        return self.sae_batch_size_tokens * self.act_block_size_sae_batch_size_mult
+        return int(self.sae_batch_size_tokens * self.act_block_size_sae_batch_size_mult)
 
     @property
     def act_block_size_seqs(self) -> int:
@@ -188,7 +188,7 @@ class TrainConfig:
     num_tokens: int = int(3e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    save_to_s3: bool = True
+    save_to_s3: bool = False
 
     measure_dead_over_n_batches: int = 15
     # For now, we skip resampling. Just set to high value.
