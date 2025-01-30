@@ -128,7 +128,11 @@ class Trainer:
                 assert not (
                     set(self.acts_write_queue.queue) & set(self.acts_read_queue.queue)
                 ), "Act queues have overlapping indices"
-                assert self.n_gpu_outstanding_tasks <= DEVICE_COUNT
+                assert self.n_gpu_outstanding_tasks <= DEVICE_COUNT and self.n_gpu_outstanding_tasks >= 0, f"n_gpu_outstanding_tasks is {self.n_gpu_outstanding_tasks}, but should be between 0 and {DEVICE_COUNT}"
+                assert self.training_needed_for_model_idx.isdisjoint(self.training_completed_for_model_idx), (
+                    f"Overlap between needed and completed sets: "
+                    f"{self.training_needed_for_model_idx & self.training_completed_for_model_idx}"
+                )
                 if self.should_add_tokens_task():
                     self.add_tokens_task()
                 elif self.should_add_train_task():

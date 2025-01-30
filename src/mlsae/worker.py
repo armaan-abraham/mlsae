@@ -5,7 +5,7 @@ import torch
 import torch.multiprocessing as mp
 import transformer_lens
 
-from mlsae.config import DTYPES, data_cfg, train_cfg
+from mlsae.config import DTYPES, data_cfg, train_cfg, DEVICE_COUNT
 from mlsae.data import stream_training_chunks
 from mlsae.model import DeepSAE, SparseAdam
 from mlsae.shared_memory import SharedMemory
@@ -56,6 +56,7 @@ def gpu_worker(
     device = f"cuda:{device_id}"
     logging.info(f"Starting worker on device {device}")
     local_llm = None
+    assert device_id >= 0 and device_id < DEVICE_COUNT, f"Device id {device_id} is out of range"
 
     try:
         while True:
