@@ -29,6 +29,7 @@ class Trainer:
         mp.set_start_method("spawn", force=True)
 
         # Instantiate models and optimizers
+        logging.info("Instantiating models and optimizers")
         self.saes = []
         self.optimizers = []
         for i, arch_dict in enumerate(train_cfg.architectures):
@@ -48,9 +49,11 @@ class Trainer:
             self.optimizers.append(optimizer)
 
         # Instantiate shared memory
+        logging.info("Instantiating shared memory")
         self.shared_memory = SharedMemory(self.saes, self.optimizers)
 
         # Instantiate queues
+        logging.info("Instantiating queues and workers")
         self.gpu_tasks_queue = mp.Queue()
         self.cpu_tasks_queue = mp.Queue()
         self.results_queue = mp.Queue()
@@ -104,7 +107,7 @@ class Trainer:
 
         self.training_needed_for_model_idx = set(range(len(train_cfg.architectures)))
         self.training_completed_for_model_idx = set()
-        self.current_act_block_idx = None
+        self.act_block_idx_current_training = None
 
         self.metrics_aggregator = []
 
@@ -119,6 +122,12 @@ class Trainer:
                     self.tokens_read_queue.qsize() + self.tokens_write_queue.qsize()
                     <= data_cfg.n_token_blocks
                 )
+                assert not (
+                    set(self.tokens_write_queue.queue) & set(self.tokens_read_queue.queue)
+                ), "Token queues have overlapping indices"
+                assert not (
+                    set(self.acts_write_queue.queue) & set(self.acts_read_queue.queue)
+                ), "Act queues have overlapping indices"
                 assert self.n_gpu_outstanding_tasks <= DEVICE_COUNT
                 if self.should_add_tokens_task():
                     self.add_tokens_task()
@@ -127,8 +136,21 @@ class Trainer:
                 elif self.should_add_acts_task():
                     self.add_acts_task()
                 else:
+                    logging.info("Waiting for result")
                     result = self.results_queue.get()
+                    logging.info("Got result")
                     self.handle_result(result)
+                logging.info(
+                    f"Token read queue size: {self.tokens_read_queue.qsize()}, "
+                    f"Token write queue size: {self.tokens_write_queue.qsize()}, "
+                    f"Act read queue size: {self.acts_read_queue.qsize()}, "
+                    f"Act write queue size: {self.acts_write_queue.qsize()}, "
+                    f"GPU outstanding tasks: {self.n_gpu_outstanding_tasks}, "
+                    f"CPU worker busy: {self.cpu_worker_busy}, "
+                    f"Training needed for model idx: {self.training_needed_for_model_idx}, "
+                    f"Training completed for model idx: {self.training_completed_for_model_idx}, "
+                    f"Act block idx current training: {self.act_block_idx_current_training}"
+                )
         finally:
             self.finish()
 
@@ -139,9 +161,11 @@ class Trainer:
 
     def add_tokens_task(self):
         token_block_idx = self.tokens_write_queue.get(block=False)
-        task = (TaskType.TOKENS, {"token_block_idx": token_block_idx})
+        task_data = {"token_block_idx": token_block_idx}
+        task = (TaskType.TOKENS, task_data)
         self.cpu_tasks_queue.put(task)
         self.cpu_worker_busy = True
+        logging.info(f"Added tokens task {task_data}")
 
     def should_add_acts_task(self):
         if (
@@ -164,12 +188,14 @@ class Trainer:
         token_block_idx = self.tokens_read_queue.get(block=False)
         # Allocate act block (write) to this task
         act_block_idx = self.acts_write_queue.get(block=False)
-        task = (
-            TaskType.ACTS,
-            {"token_block_idx": token_block_idx, "act_block_idx": act_block_idx},
-        )
+        task_data = {
+            "token_block_idx": token_block_idx,
+            "act_block_idx": act_block_idx,
+        }
+        task = (TaskType.ACTS, task_data)
         self.gpu_tasks_queue.put(task)
         self.n_gpu_outstanding_tasks += 1
+        logging.info(f"Added acts task {task_data}")
 
     def should_add_train_task(self):
         if self.n_gpu_outstanding_tasks == DEVICE_COUNT:
@@ -179,28 +205,32 @@ class Trainer:
     def add_train_task(self):
         # If we haven't started training models for a new act block, we choose
         # an act block to read from
-        if self.current_act_block_idx is None:
-            self.current_act_block_idx = self.acts_read_queue.get(block=False)
+        if self.act_block_idx_current_training is None:
+            self.act_block_idx_current_training = self.acts_read_queue.get(block=False)
             assert len(self.training_needed_for_model_idx) == len(train_cfg.architectures)
 
         # Take one model that needs to be trained, and it to the task queue
         model_idx = self.training_needed_for_model_idx.pop()
-        task = (
-            TaskType.TRAIN,
-            {"model_idx": model_idx, "act_block_idx": self.current_act_block_idx},
-        )
+        task_data = {
+            "model_idx": model_idx,
+            "act_block_idx": self.act_block_idx_current_training,
+        }
+        task = (TaskType.TRAIN, task_data)
         self.gpu_tasks_queue.put(task)
 
         self.n_gpu_outstanding_tasks += 1
+        logging.info(f"Added train task {task_data}")
 
     def handle_tokens_result(self, result_data):
         token_block_idx = result_data["token_block_idx"]
+        logging.info(f"Got tokens result token block idx: {token_block_idx}")
         self.tokens_read_queue.put(token_block_idx)
         self.cpu_worker_busy = False
 
     def handle_acts_result(self, result_data):
         act_block_idx = result_data["act_block_idx"]
         token_block_idx = result_data["token_block_idx"]
+        logging.info(f"Got acts result act block idx: {act_block_idx}, token block idx: {token_block_idx}")
         self.acts_read_queue.put(act_block_idx)
         self.tokens_write_queue.put(token_block_idx)
         self.n_gpu_outstanding_tasks -= 1
@@ -208,6 +238,7 @@ class Trainer:
     def handle_train_result(self, result_data):
         model_idx = result_data["model_idx"]
         act_block_idx = result_data["act_block_idx"]
+        logging.info(f"Got train result model idx: {model_idx}, act block idx: {act_block_idx}")
         self.training_completed_for_model_idx.add(model_idx)
         should_log = False
         if len(self.training_completed_for_model_idx) == len(train_cfg.architectures):
@@ -219,7 +250,7 @@ class Trainer:
                 range(len(train_cfg.architectures))
             )
             self.training_completed_for_model_idx = set()
-            self.current_act_block_idx = None
+            self.act_block_idx_current_training = None
             should_log = True
         self.aggregate_and_log_metrics(result_data, should_log)
         self.n_gpu_outstanding_tasks -= 1

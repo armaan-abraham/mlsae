@@ -22,7 +22,9 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
     token_stream = stream_training_chunks()
     try:
         while True:
+            logging.info("CPU worker waiting for task")
             task = tasks.get()
+            logging.info(f"CPU worker got task")
             if task is None:
                 break
             task_type, task_data = task
@@ -57,7 +59,9 @@ def gpu_worker(
 
     try:
         while True:
+            logging.info(f"GPU worker {device_id} waiting for task")
             task = tasks.get()
+            logging.info(f"GPU worker {device_id} got task")
             if task is None:
                 break
             task_type, task_data = task
