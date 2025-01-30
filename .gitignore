@@ -12,6 +12,7 @@ wheels/
 src/mlsae/cache/
 src/mlsae/data/
 src/mlsae/checkpoints/
+src/mlsae/logs/
 wandb/
 
 .DS_Store
