@@ -28,8 +28,21 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
             task_type, task_data = task
             assert task_type == TaskType.TOKENS
             token_block_idx = task_data["token_block_idx"]
+            # It is okay that we are not checking for stopiteration. We are
+            # setting the max tokens based on knowledge of the dataset and even
+            # if we are wrong, it's not a big deal that the exception gets
+            # bubbled up.
             token_block = next(token_stream)
+            assert (
+                token_block.shape[0] == data_cfg.act_block_size_seqs
+            ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {token_block.shape[0]}"
             shared_memory.token_blocks[token_block_idx].copy_(token_block)
+            results.put(
+                (
+                    TaskType.TOKENS,
+                    {"token_block_idx": token_block_idx},
+                )
+            )
     except Exception as e:
         results.put(e)
         raise
@@ -70,6 +83,9 @@ def task_generate(
     task_data: dict,
     shared_memory: SharedMemory,
 ):
+    # It's not ideal that we are moving the llm to and from CPU every time we
+    # get this task, but it is acceptable so we can have a GPU work on both act
+    # generation and training
     local_llm.to(device)
     all_acts = []
     token_block = shared_memory.token_blocks[task_data["token_block_idx"]]
@@ -78,7 +94,7 @@ def task_generate(
     ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {token_block.shape[0]}"
 
     with torch.no_grad():
-        with torch.autocast("cuda", DTYPES[data_cfg.sae_dtype]):
+        with torch.autocast("cuda", dtype=DTYPES[data_cfg.sae_dtype]):
             for start in range(0, token_block.shape[0], data_cfg.llm_batch_size_seqs):
                 subblock = token_block[start : start + data_cfg.llm_batch_size_seqs]
                 _, cache = local_llm.run_with_cache(
@@ -135,11 +151,14 @@ def task_train(
 
     metrics_list = []
 
+    # This loop is fine, as we assert that the act block size is correct above,
+    # and we set the act block size as a multiple of the SAE batch size
     for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
         acts = act_block[start : start + data_cfg.sae_batch_size_tokens]
 
         loss, l2_loss, feature_acts, _ = model(acts)
         loss.backward()
+        # This is a but uncommon, but is not a bug.
         model.make_decoder_weights_and_grad_unit_norm()
         optimizer.step()
         optimizer.zero_grad()

@@ -34,5 +34,5 @@ class SharedMemory:
                 torch.zeros(sae.sparse_dim, dtype=torch.float).share_memory_()
                 for sae in saes
             ],
-            "n_iter": [torch.tensor(0, dtype=torch.int).share_memory_() for _ in saes],
+            "n_iter": [torch.tensor(0, dtype=torch.int64).share_memory_() for _ in saes],
         }

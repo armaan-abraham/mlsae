@@ -77,7 +77,16 @@ def tokenize_and_concatenate(
 
     def tokenize_function(examples: Dict[str, List[str]]) -> Dict[str, np.ndarray]:
         text = examples[column_name]
+        # This is not a bug. We are only loading datasets that are
+        # structured in this way.
+        assert isinstance(text, list), f"Expected list, got {type(text)}"
+        assert isinstance(text[0], list), f"Expected list of lists, got {type(text[0])}"
+        assert isinstance(
+            text[0][0], str
+        ), f"Expected list of lists of strings, got {type(text[0][0])}"
         # Concatenate it all into an enormous string, separated by eos_tokens
+        # This double loop looks incorrect, but we are actually getting a list
+        # of lists of strings from text, so this is required and correct
         full_text = tokenizer.eos_token.join(
             [tokenizer.eos_token.join(sub_text) for sub_text in text]
         )
@@ -154,14 +163,14 @@ def stream_training_chunks(eval: bool = False):
 
     dataset_iter = tokenize_and_concatenate(
         dataset_iter,
-        AutoTokenizer.from_pretrained("gpt2"),
+        AutoTokenizer.from_pretrained(data_cfg.tokenizer_name),
         streaming=True,
         max_length=data_cfg.seq_len,
         add_bos_token=True,
         column_name=data_cfg.dataset_column_name,
     )
 
-    dataset_iter = dataset_iter.batch(data_cfg.buffer_size_tokens // data_cfg.seq_len)
+    dataset_iter = dataset_iter.batch(data_cfg.act_block_size_seqs)
 
     for batch in dataset_iter:
         yield batch["tokens"].to(dtype=torch.int32, device="cpu")

@@ -178,6 +178,12 @@ class Trainer:
                 {"model_idx": model_idx, "act_block_idx": act_block_idx},
             )
             self.gpu_tasks_queue.put(task)
+            # This seems weird, but it is not a bug that we are adding all of
+            # these tasks at once, potentially overshooting DEVICE_COUNT. The
+            # point of the DEVICE_COUNT check in should_add_train_task is not to
+            # ensure that there aren't more GPU-dependent tasks than there are
+            # GPUs in the task queue, but that we wait for results to get back
+            # before adding more GPU-dependent tasks.
             self.n_gpu_outstanding_tasks += 1
             self.act_block_idx_to_model_idx[act_block_idx].add(model_idx)
         self.train_iter += 1
@@ -212,6 +218,7 @@ class Trainer:
             self.train_task_outstanding = False
             self.pbar.update(1)
         self.aggregate_and_log_metrics(result_data)
+        self.n_gpu_outstanding_tasks -= 1
 
     def aggregate_and_log_metrics(self, result_data):
         metrics = result_data["metrics"]
@@ -239,18 +246,16 @@ class Trainer:
             self.metrics_aggregator = []
 
     def get_training_state(self):
-        return (
-            {
-                "cpu_worker_busy": self.cpu_worker_busy,
-                "train_iter_done": self.train_iter_done,
-                "train_iter": self.train_iter,
-                "n_gpu_outstanding_tasks": self.n_gpu_outstanding_tasks,
-                "acts_read_queue_size": self.acts_read_queue.qsize(),
-                "acts_write_queue_size": self.acts_write_queue.qsize(),
-                "tokens_read_queue_size": self.tokens_read_queue.qsize(),
-                "tokens_write_queue_size": self.tokens_write_queue.qsize(),
-            }
-        )
+        return {
+            "cpu_worker_busy": self.cpu_worker_busy,
+            "train_iter_done": self.train_iter_done,
+            "train_iter": self.train_iter,
+            "n_gpu_outstanding_tasks": self.n_gpu_outstanding_tasks,
+            "acts_read_queue_size": self.acts_read_queue.qsize(),
+            "acts_write_queue_size": self.acts_write_queue.qsize(),
+            "tokens_read_queue_size": self.tokens_read_queue.qsize(),
+            "tokens_write_queue_size": self.tokens_write_queue.qsize(),
+        }
 
     def handle_result(self, result):
         if isinstance(result, Exception):

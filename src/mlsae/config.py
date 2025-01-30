@@ -17,6 +17,7 @@ class DataConfig:
     sae_dtype: str = "fp32"
     cache_dtype: str = "bf16"
     model_name: str = "gpt2-small"
+    tokenizer_name: str = "gpt2"
     site: str = "resid_pre"
     layer: int = 9
     act_size: int = 768
@@ -29,25 +30,6 @@ class DataConfig:
     n_act_blocks: int = 5
     get_act_blocks_threshold: int = 2
 
-    eval_data_seed: int = 59
-    eval_batches: int = 500
-
-    caching: bool = False
-    # These are the fields that must match before reusing an existing cache
-    cache_id_fields: list = field(
-        default_factory=lambda: [
-            # TODO: eval data seed
-            "seed",
-            "model_name",
-            "layer",
-            "site",
-            "seq_len",
-            "act_size",
-            "enc_dtype",
-            "dataset_name",
-        ]
-    )
-
     @property
     def act_block_size_tokens(self) -> int:
         return self.sae_batch_size_tokens * self.act_block_size_sae_batch_size_mult
@@ -59,10 +41,6 @@ class DataConfig:
     @property
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
-
-    @property
-    def eval_tokens(self) -> int:
-        return self.sae_batch_size_tokens * self.eval_tokens_buffer_batch_size_mult
 
 
 @dataclass
@@ -215,6 +193,7 @@ class TrainConfig:
     save_to_s3: bool = True
 
     measure_dead_over_n_batches: int = 15
+    # For now, we skip resampling. Just set to high value.
     resample_dead_every_n_batches: int = int(15e9)
 
 

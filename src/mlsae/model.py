@@ -37,9 +37,9 @@ class TopKActivation(nn.Module):
 class DeepSAE(nn.Module):
     def __init__(
         self,
-        encoder_dim_mults: list[int],
-        sparse_dim_mult: int,
-        decoder_dim_mults: list[int],
+        encoder_dim_mults: list[float],
+        sparse_dim_mult: float,
+        decoder_dim_mults: list[float],
         act_size: int,
         name: str = None,
         enc_dtype: str = "fp32",
@@ -50,7 +50,6 @@ class DeepSAE(nn.Module):
         super().__init__()
 
         assert not encoder_dim_mults or encoder_dim_mults[-1] == 1
-        assert not decoder_dim_mults or (decoder_dim_mults[0] == decoder_dim_mults[-1])
         self.name = name
         self.encoder_dims = [int(dim * act_size) for dim in encoder_dim_mults]
         self.decoder_dims = [int(dim * act_size) for dim in decoder_dim_mults]
@@ -60,6 +59,7 @@ class DeepSAE(nn.Module):
         self.dtype = DTYPES[enc_dtype]
         self.device = str(device)
         self.topk = topk
+        assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
         self.act_l2_coeff = act_l2_coeff
         self.track_acts_stats = False
 
