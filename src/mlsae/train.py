@@ -132,7 +132,7 @@ class Trainer:
         if self.cpu_worker_busy:
             return False
         return (
-            self.tokens_read_queue.qsize() < data_cfg.get_tokens_blocks_threshold
+            self.tokens_read_queue.qsize() < data_cfg.get_token_blocks_threshold
             and not self.tokens_write_queue.empty()
         )
 
@@ -146,7 +146,7 @@ class Trainer:
         if self.n_gpu_outstanding_tasks >= DEVICE_COUNT:
             return False
         return (
-            self.acts_read_queue.qsize() < data_cfg.get_acts_blocks_threshold
+            self.acts_read_queue.qsize() < data_cfg.get_act_blocks_threshold
             and not self.acts_write_queue.empty()
             and not self.tokens_read_queue.empty()
         )
@@ -200,7 +200,7 @@ class Trainer:
         act_block_idx = result_data["act_block_idx"]
         token_block_idx = result_data["token_block_idx"]
         self.acts_read_queue.put(act_block_idx)
-        self.tokens_read_queue.put(token_block_idx)
+        self.tokens_write_queue.put(token_block_idx)
         self.n_gpu_outstanding_tasks -= 1
 
     def handle_train_result(self, result_data):
@@ -208,8 +208,9 @@ class Trainer:
         act_block_idx = result_data["act_block_idx"]
         self.act_block_idx_to_model_idx[act_block_idx].remove(model_idx)
         if len(self.act_block_idx_to_model_idx[act_block_idx]) == 0:
-            self.acts_read_queue.put(act_block_idx)
+            self.acts_write_queue.put(act_block_idx)
             self.train_task_outstanding = False
+            self.pbar.update(1)
         self.aggregate_and_log_metrics(result_data)
 
     def aggregate_and_log_metrics(self, result_data):
@@ -217,14 +218,14 @@ class Trainer:
         model_idx = result_data["model_idx"]
         if not self.metrics_aggregator:
             self.metrics_aggregator = [
-                {} for _ in range(len(data_cfg.act_block_size_sae_batch_size_mult))
+                {} for _ in range(data_cfg.act_block_size_sae_batch_size_mult)
             ]
         for metrics_for_batch, aggregate_metrics_for_batch in zip(
             metrics, self.metrics_aggregator
         ):
             for k, v in metrics_for_batch.items():
                 aggregate_metrics_for_batch[
-                    f"{self.train_cfg.architectures[model_idx]['name']}_{k}"
+                    f"{train_cfg.architectures[model_idx]['name']}_{k}"
                 ] = v
 
         if not self.train_task_outstanding:
@@ -239,14 +240,16 @@ class Trainer:
 
     def get_training_state(self):
         return (
-            self.cpu_worker_busy,
-            self.train_iter_done,
-            self.train_iter,
-            self.n_gpu_outstanding_tasks,
-            self.acts_read_queue.qsize(),
-            self.acts_write_queue.qsize(),
-            self.tokens_read_queue.qsize(),
-            self.tokens_write_queue.qsize(),
+            {
+                "cpu_worker_busy": self.cpu_worker_busy,
+                "train_iter_done": self.train_iter_done,
+                "train_iter": self.train_iter,
+                "n_gpu_outstanding_tasks": self.n_gpu_outstanding_tasks,
+                "acts_read_queue_size": self.acts_read_queue.qsize(),
+                "acts_write_queue_size": self.acts_write_queue.qsize(),
+                "tokens_read_queue_size": self.tokens_read_queue.qsize(),
+                "tokens_write_queue_size": self.tokens_write_queue.qsize(),
+            }
         )
 
     def handle_result(self, result):

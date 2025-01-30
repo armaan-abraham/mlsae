@@ -55,7 +55,7 @@ def gpu_worker(
                     ).to(DTYPES[data_cfg.sae_dtype])
                 task_generate(results, device, local_llm, task_data, shared_memory)
             elif task_type == TaskType.TRAIN:
-                task_train(results, device, task_data)
+                task_train(results, device, task_data, shared_memory)
             else:
                 raise ValueError(f"Unknown task type: {task}")
     except Exception as e:
@@ -77,21 +77,22 @@ def task_generate(
         token_block.shape[0] == data_cfg.act_block_size_seqs
     ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {token_block.shape[0]}"
 
-    with torch.autocast("cuda", DTYPES[data_cfg.sae_dtype]):
-        for start in range(0, token_block.shape[0], data_cfg.llm_batch_size_seqs):
-            subblock = token_block[start : start + data_cfg.llm_batch_size_seqs]
-            _, cache = local_llm.run_with_cache(
-                subblock,
-                stop_at_layer=data_cfg.layer + 1,
-                names_filter=data_cfg.act_name,
-                return_cache_object=True,
-            )
-            acts = cache.cache_dict[data_cfg.act_name]
-            assert (
-                acts.shape[-1] == data_cfg.act_size
-            ), f"Expected {data_cfg.act_size} act size, got {acts.shape[-1]}"
-            acts = acts.reshape(acts.shape[0] * acts.shape[1], data_cfg.act_size)
-            all_acts.append(acts)
+    with torch.no_grad():
+        with torch.autocast("cuda", DTYPES[data_cfg.sae_dtype]):
+            for start in range(0, token_block.shape[0], data_cfg.llm_batch_size_seqs):
+                subblock = token_block[start : start + data_cfg.llm_batch_size_seqs]
+                _, cache = local_llm.run_with_cache(
+                    subblock,
+                    stop_at_layer=data_cfg.layer + 1,
+                    names_filter=data_cfg.act_name,
+                    return_cache_object=True,
+                )
+                acts = cache.cache_dict[data_cfg.act_name]
+                assert (
+                    acts.shape[-1] == data_cfg.act_size
+                ), f"Expected {data_cfg.act_size} act size, got {acts.shape[-1]}"
+                acts = acts.reshape(acts.shape[0] * acts.shape[1], data_cfg.act_size)
+                all_acts.append(acts)
 
     acts_block = torch.cat(all_acts, dim=0)
     shared_memory.act_blocks[task_data["act_block_idx"]].copy_(acts_block)

@@ -24,6 +24,11 @@ class DataConfig:
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
 
+    n_token_blocks: int = 10
+    get_token_blocks_threshold: int = 4
+    n_act_blocks: int = 5
+    get_act_blocks_threshold: int = 2
+
     eval_data_seed: int = 59
     eval_batches: int = 500
 
@@ -210,7 +215,7 @@ class TrainConfig:
     save_to_s3: bool = True
 
     measure_dead_over_n_batches: int = 15
-    resample_dead_every_n_batches: int = 15e10
+    resample_dead_every_n_batches: int = int(15e9)
 
 
 train_cfg = TrainConfig()
