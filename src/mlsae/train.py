@@ -107,10 +107,7 @@ class Trainer:
         self.act_block_idx_to_model_idx = defaultdict(set)
         self.act_block_idx_to_train_iter = {}
 
-        self.metrics_by_train_iter = []
-        for i in range(self.max_train_iter):
-            self.metrics_by_train_iter.append({})
-        self.metrics_by_train_iter_log_idx = 0
+        self.metrics_aggregator = []
 
         try:
             self.pbar = tqdm.tqdm(total=self.max_train_iter, desc="Training")
@@ -183,10 +180,6 @@ class Trainer:
             self.gpu_tasks_queue.put(task)
             self.n_gpu_outstanding_tasks += 1
             self.act_block_idx_to_model_idx[act_block_idx].add(model_idx)
-        self.metrics_by_train_iter[self.train_iter]["training_state"] = (
-            self.get_training_state()
-        )
-        self.act_block_idx_to_train_iter[act_block_idx] = self.train_iter
         self.train_iter += 1
         self.train_task_outstanding = True
 
@@ -213,12 +206,6 @@ class Trainer:
     def handle_train_result(self, result_data):
         model_idx = result_data["model_idx"]
         act_block_idx = result_data["act_block_idx"]
-        train_iter = self.act_block_idx_to_train_iter[act_block_idx]
-        if train_iter > self.max_train_iter:
-            logging.warning(
-                f"Train iter {train_iter} is greater than max train iter {self.max_train_iter}"
-            )
-            return
         self.act_block_idx_to_model_idx[act_block_idx].remove(model_idx)
         if len(self.act_block_idx_to_model_idx[act_block_idx]) == 0:
             self.acts_read_queue.put(act_block_idx)
@@ -228,49 +215,27 @@ class Trainer:
     def aggregate_and_log_metrics(self, result_data):
         metrics = result_data["metrics"]
         model_idx = result_data["model_idx"]
-        new_metrics = {}
-        for k, v in metrics.items():
-            new_metrics[f"{self.train_cfg.architectures[model_idx]['name']}_{k}"] = v
-        metrics = new_metrics
-        act_block_idx = result_data["act_block_idx"]
-
-        # Update metrics entry
-        train_iter = self.act_block_idx_to_train_iter[act_block_idx]
-        metrics_for_train_iter = self.metrics_by_train_iter[train_iter]
-        metrics_for_train_iter[model_idx] = metrics
-
-        # If metrics are complete, add training state to these metrics If the
-        # log idx is the idx we're looking at, log this one and all subsequent
-        # completed ones until we reach an incomplete one
-        if (
-            self.metrics_are_complete(metrics_for_train_iter)
-            and self.metrics_by_train_iter_log_idx == train_iter
+        if not self.metrics_aggregator:
+            self.metrics_aggregator = [
+                {} for _ in range(len(data_cfg.act_block_size_sae_batch_size_mult))
+            ]
+        for metrics_for_batch, aggregate_metrics_for_batch in zip(
+            metrics, self.metrics_aggregator
         ):
-            while self.metrics_are_complete(
-                self.metrics_by_train_iter[self.metrics_by_train_iter_log_idx]
-            ):
-                self.log_metrics_for_train_iter(
-                    self.metrics_by_train_iter[self.metrics_by_train_iter_log_idx]
-                )
-                del self.metrics_by_train_iter[self.metrics_by_train_iter_log_idx]
-                self.metrics_by_train_iter_log_idx += 1
+            for k, v in metrics_for_batch.items():
+                aggregate_metrics_for_batch[
+                    f"{self.train_cfg.architectures[model_idx]['name']}_{k}"
+                ] = v
 
-    def metrics_are_complete(self, metrics_for_train_iter):
-        # +1 for training state
-        assert len(metrics_for_train_iter) <= len(train_cfg.architectures) + 1
-        return len(metrics_for_train_iter) == (len(train_cfg.architectures) + 1)
-
-    def log_metrics_for_train_iter(self, metrics_for_train_iter):
-        training_state = metrics_for_train_iter.pop("training_state")
-        for idx, metrics_for_batch_by_model in enumerate(
-            zip(*metrics_for_train_iter.values())
-        ):
-            metrics_for_batch = {}
-            for metrics_for_batch_for_model in metrics_for_batch_by_model:
-                metrics_for_batch.update(metrics_for_batch_for_model)
-            if idx == 0:
-                metrics_for_batch.update(training_state)
-            wandb.log(metrics_for_batch)
+        if not self.train_task_outstanding:
+            # All train tasks for this act block have been completed, log all
+            # together
+            for i, aggregate_metrics_for_batch in enumerate(self.metrics_aggregator):
+                log = aggregate_metrics_for_batch
+                if i == 0:
+                    log.update(self.get_training_state())
+                wandb.log(log)
+            self.metrics_aggregator = []
 
     def get_training_state(self):
         return (

@@ -17,10 +17,6 @@ model_dir = Path(__file__).parent / "checkpoints"
 
 
 def get_pet_name() -> str:
-    """
-    Generates a random "pet" name, e.g. 'lively-spaniel', using the petname library.
-    """
-    # petname.generate() produces a random name like "fragrant-emu" by default
     return petname.generate(words=3)
 
 
