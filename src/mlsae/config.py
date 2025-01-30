@@ -8,11 +8,13 @@ import transformer_lens
 @dataclass
 class DataConfig:
     seed: int = 49
-    buffer_batch_size_tokens: int = 131072
-    buffer_size_buffer_batch_size_mult: int = 16
+    sae_batch_size_tokens: int = 131072
+    act_block_size_sae_batch_size_mult: int = 16
+
     seq_len: int = 128
-    model_batch_size_seqs: int = 256
-    enc_dtype: str = "fp32"
+    llm_batch_size_seqs: int = 256
+
+    sae_dtype: str = "fp32"
     cache_dtype: str = "bf16"
     model_name: str = "gpt2-small"
     site: str = "resid_pre"
@@ -42,8 +44,12 @@ class DataConfig:
     )
 
     @property
-    def buffer_size_tokens(self) -> int:
-        return self.buffer_batch_size_tokens * self.buffer_size_buffer_batch_size_mult
+    def act_block_size_tokens(self) -> int:
+        return self.sae_batch_size_tokens * self.act_block_size_sae_batch_size_mult
+
+    @property
+    def act_block_size_seqs(self) -> int:
+        return self.act_block_size_tokens // self.seq_len
 
     @property
     def act_name(self) -> str:
@@ -51,7 +57,7 @@ class DataConfig:
 
     @property
     def eval_tokens(self) -> int:
-        return self.buffer_batch_size_tokens * self.eval_tokens_buffer_batch_size_mult
+        return self.sae_batch_size_tokens * self.eval_tokens_buffer_batch_size_mult
 
 
 @dataclass
@@ -89,7 +95,6 @@ class TrainConfig:
                 "topk": 64,
                 "act_l2_coeff": 1.2,
             },
-
             # === 1-0 ===
             # Varying l2 coeff
             {
@@ -143,7 +148,6 @@ class TrainConfig:
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
-
             # === 1-1 ===
             # Varying l2 coeff
             {
@@ -217,3 +221,5 @@ assert (
 )
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
+
+DEVICE_COUNT = torch.cuda.device_count()

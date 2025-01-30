@@ -1,28 +1,18 @@
-import json
 import logging
 import os
-import threading
-import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
 import einops
 import numpy as np
 import torch
-import torch.multiprocessing as mp
-import transformer_lens
 from datasets import load_dataset
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
-from mlsae.config import DTYPES, DataConfig, data_cfg
-from mlsae.worker import TaskType
+from mlsae.config import data_cfg
 
 this_dir = Path(__file__).parent
-
-
-DEVICE_COUNT = torch.cuda.device_count()
 
 # Create directories
 this_dir = Path(__file__).parent
@@ -37,47 +27,6 @@ for dir_path in [cache_dir, data_dir, model_dir, activations_dir]:
 # Set environment variables for caching
 os.environ["TRANSFORMERS_CACHE"] = str(cache_dir)
 os.environ["DATASETS_CACHE"] = str(cache_dir)
-
-
-def get_relevant_config_subset(cfg: DataConfig) -> dict:
-    subset = {}
-    for field_name in cfg.cache_id_fields:
-        subset[field_name] = getattr(cfg, field_name)
-    return subset
-
-
-def find_existing_cache_folder(
-    cfg: DataConfig, base_cache_dir: Path, eval=False
-) -> Path:
-    desired_subset = get_relevant_config_subset(cfg)
-    for subdir in base_cache_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-        config_path = subdir / "config.json"
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                stored_cfg_subset = json.load(f)
-            if stored_cfg_subset.get("eval", False) == eval:
-                stored_cfg_subset.pop("eval")
-                if stored_cfg_subset == desired_subset:
-                    return subdir
-    return None
-
-
-def create_new_cache_folder(cfg: DataConfig, base_cache_dir: Path, eval=False) -> Path:
-    """
-    Creates a new UUID-based folder under base_cache_dir,
-    writes config.json with relevant fields, and returns path.
-    """
-    new_cache_folder = base_cache_dir / str(uuid.uuid4())
-    new_cache_folder.mkdir(parents=True, exist_ok=True)
-
-    relevant_cfg = get_relevant_config_subset(cfg)
-    relevant_cfg["eval"] = eval
-    with open(new_cache_folder / "config.json", "w") as f:
-        json.dump(relevant_cfg, f, indent=2)
-
-    return new_cache_folder
 
 
 def keep_single_column(dataset: Dataset, col_name: str):
@@ -190,7 +139,7 @@ def tokenize_and_concatenate(
     return tokenized_dataset.with_format(type="torch")
 
 
-def stream_training_chunks(data_cfg, cache_dir, tokenizer, eval: bool = False):
+def stream_training_chunks(eval: bool = False):
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
         "en",
@@ -205,7 +154,7 @@ def stream_training_chunks(data_cfg, cache_dir, tokenizer, eval: bool = False):
 
     dataset_iter = tokenize_and_concatenate(
         dataset_iter,
-        tokenizer,
+        AutoTokenizer.from_pretrained("gpt2"),
         streaming=True,
         max_length=data_cfg.seq_len,
         add_bos_token=True,
@@ -216,223 +165,3 @@ def stream_training_chunks(data_cfg, cache_dir, tokenizer, eval: bool = False):
 
     for batch in dataset_iter:
         yield batch["tokens"].to(dtype=torch.int32, device="cpu")
-
-
-class StaticBuffer:
-    def __init__(self):
-        self.pointer = 0
-        self.buffer = None
-
-    def populate(self, buffer: torch.Tensor):
-        # Put the data in shared memory, so multiple processes can see it.
-        self.buffer = buffer.share_memory_()  # <-- CHANGED
-        assert buffer.ndim == 2, f"Expected 2D, got {buffer.ndim}D"
-        assert buffer.shape[1] == data_cfg.act_size, (
-            f"Expected {data_cfg.act_size} act size, got {buffer.shape[1]}"
-        )
-        assert buffer.shape[0] == data_cfg.buffer_size_tokens, (
-            f"Expected {data_cfg.buffer_size_tokens} tokens, got {buffer.shape[0]}"
-        )
-        self.pointer = 0
-
-    def needs_refresh(self):
-        return self.pointer >= self.buffer.shape[0]
-
-    def to(self, device: str) -> None:
-        self.buffer = self.buffer.to(device)
-
-    @torch.no_grad()
-    def next(self):
-        assert not self.needs_refresh(), "Buffer is empty"
-        out = self.buffer[
-            self.pointer : self.pointer + data_cfg.buffer_batch_size_tokens
-        ]
-        self.pointer += data_cfg.buffer_batch_size_tokens
-        return out
-
-    def clone(self):
-        """
-        Instead of physically copying data, just return a new StaticBuffer object
-        that points to the same underlying shared-memory buffer, but starts at pointer=0.
-        """
-        new_buffer = StaticBuffer()
-        new_buffer.buffer = self.buffer  # same underlying tensor
-        new_buffer.pointer = 0
-        return new_buffer
-
-
-class Buffer:
-    """
-    Streams tokens and fills self.buffer with model activations in shared memory.
-    """
-
-    def __init__(
-        self,
-        results_queue: mp.Queue,
-        tasks_queue: mp.Queue,
-        num_workers: int = DEVICE_COUNT,
-        eval: bool = False,
-    ):
-        self.num_workers = num_workers
-        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
-        logging.info("Initializing buffer...")
-        self.token_stream = stream_training_chunks(
-            data_cfg,
-            cache_dir,
-            self.tokenizer,
-            eval=eval,
-        )
-
-        self.results_queue = results_queue
-        self.tasks_queue = tasks_queue
-
-        self._init_cache(eval=eval)
-
-        # For cache
-        self.chunk_index = 0
-
-        # Create and store a StaticBuffer instance.
-        self.static_buffer = StaticBuffer()
-
-        # Prefetch-related members
-        self._prefetch_thread = None
-        self._prefetched_acts = None
-        self._prefetch_lock = threading.Lock()
-
-    def _init_cache(self, eval: bool = False):
-        # Find or create cache folder if caching is enabled
-        self.cache_path = None
-        if data_cfg.caching:
-            existing_cache = find_existing_cache_folder(
-                data_cfg, activations_dir, eval=eval
-            )
-            if existing_cache is not None:
-                logging.info(f"Found existing cache: {existing_cache}")
-                self.cache_path = existing_cache
-            else:
-                self.cache_path = create_new_cache_folder(
-                    data_cfg, activations_dir, eval=eval
-                )
-                logging.info(f"Created new cache folder: {self.cache_path}")
-
-    def _prefetch_chunk(self, next_index: int):
-        """
-        In a background thread, check if the given chunk is in the cache.
-        If yes, load it into _prefetched_acts; if not, do nothing.
-        """
-        if not data_cfg.caching or self.cache_path is None:
-            return
-
-        chunk_path = self.cache_path / f"chunk_{next_index}.pt"
-        if chunk_path.exists():
-            # If it exists, load it
-            logging.info(f"(Prefetch) Found chunk {next_index} in cache. Loading...")
-            acts = torch.load(chunk_path, map_location="cpu").to(
-                DTYPES[data_cfg.enc_dtype]
-            )
-
-            with self._prefetch_lock:
-                # Store for main thread to pick up on next refresh()
-                self._prefetched_acts = acts
-        else:
-            logging.info(
-                f"(Prefetch) Chunk {next_index} not found in cache. Skipping prefetch."
-            )
-
-    @torch.no_grad()
-    def refresh(self):
-        """
-        Refreshes the StaticBuffer with the next chunk. If a prefetched chunk is
-        available, uses it. Otherwise, normal logic applies. Spawns a new thread
-        to prefetch the next chunk from cache for potential future use.
-        """
-        # Wait for any existing prefetch thread to finish
-        if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join()
-
-        # Check if there is a prefetched chunk available
-        with self._prefetch_lock:
-            if self._prefetched_acts is not None:
-                acts = self._prefetched_acts
-                self._prefetched_acts = None
-            else:
-                acts = None
-
-        # We need to load the tokens regardless of caching, so if we get a cache
-        # miss, our iter is up to date
-        logging.info("Loading tokens")
-        tokens = next(self.token_stream)
-        logging.info(f"Loaded tokens of shape {tokens.shape}")
-        assert tokens is not None, "No more data from token_stream."
-        assert tokens.ndim == 2, f"Expected 2D tokens, got {tokens.ndim}D"
-        assert (
-            tokens.shape[1] == data_cfg.seq_len
-        ), f"Expected seq length {data_cfg.seq_len}, got {tokens.shape[1]}"
-        # If we had no prefetched acts, try to read from disk or run inference
-        if acts is None:
-            chunk_path = None
-            if data_cfg.caching and self.cache_path is not None:
-                chunk_path = self.cache_path / f"chunk_{self.chunk_index}.pt"
-                if chunk_path.exists():
-                    logging.info(f"Loading chunk {self.chunk_index} from cache...")
-                    acts = torch.load(chunk_path, map_location="cpu").to(
-                        DTYPES[data_cfg.enc_dtype]
-                    )
-            if acts is None:
-                # run_inference_multi across GPUs
-                acts = self.run_inference_multi(tokens)
-                assert acts.ndim == 2, f"Expected 2D acts, got {acts.ndim}D"
-                assert acts.shape[1] == data_cfg.act_size, (
-                    f"Expected act size {data_cfg.act_size}, got {acts.shape[1]}"
-                )
-                if data_cfg.caching and self.cache_path is not None and chunk_path:
-                    torch.save(
-                        acts.to(DTYPES[data_cfg.cache_dtype]),
-                        chunk_path,
-                    )
-
-        self.static_buffer.populate(acts)
-
-        self.chunk_index += 1
-
-        # Prefetch next chunk from cache
-        self._prefetch_thread = threading.Thread(
-            target=self._prefetch_chunk,
-            args=(self.chunk_index,),
-        )
-        self._prefetch_thread.start()
-
-    @torch.no_grad()
-    def run_inference_multi(self, seqs: torch.Tensor) -> torch.Tensor:
-        """
-        Distributes seqs across multiple processes (one per GPU). Collects results.
-        """
-        total_seqs = seqs.shape[0]
-        chunk_size = total_seqs // self.num_workers
-        seqs_list = []
-
-        for i in range(self.num_workers):
-            start_idx = i * chunk_size
-            end_idx = (
-                total_seqs if i == (self.num_workers - 1) else (start_idx + chunk_size)
-            )
-            seqs_list.append(seqs[start_idx:end_idx])
-
-        logging.info("Running inference with multiprocessing...")
-        for i in range(self.num_workers):
-            self.tasks_queue.put((TaskType.GENERATE, {"seq_chunk": seqs_list[i]}))
-
-        results = []
-        for _ in range(self.num_workers):
-            result = self.results_queue.get()
-            if isinstance(result, Exception):
-                raise result
-            results.append(result)
-
-        logging.info("Combining partial results...")
-        return torch.cat(results, dim=0)
-
-    def __del__(self):
-        logging.info("Cleaning up Buffer resources...")
-        if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join()

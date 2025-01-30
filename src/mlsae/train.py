@@ -1,5 +1,7 @@
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
+from queue import Queue
 
 import torch
 import torch.multiprocessing as mp
@@ -12,145 +14,308 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-from mlsae.config import data_cfg, train_cfg
-from mlsae.data import Buffer
+from mlsae.config import DEVICE_COUNT, data_cfg, train_cfg
 from mlsae.model import DeepSAE, SparseAdam
-from mlsae.worker import TaskType, worker
+from mlsae.shared_memory import SharedMemory
+from mlsae.worker import TaskType, cpu_worker, gpu_worker, init_optimizer
 
 
-def main():
-    wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
-    wandb.config.update(train_cfg)
-    wandb.config.update(data_cfg)
+class Trainer:
+    def train(self):
+        wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
+        wandb.config.update(train_cfg)
+        wandb.config.update(data_cfg)
 
-    # ===== Instantiate workers =====
-    mp.set_start_method("spawn", force=True)
+        mp.set_start_method("spawn", force=True)
 
-    tasks_queue = mp.Queue()
-    results_queue = mp.Queue()
-    workers = []
-    for device_id in range(torch.cuda.device_count()):
-        p = mp.Process(
-            target=worker,
-            args=(device_id, tasks_queue, results_queue),
+        # Instantiate models and optimizers
+        self.saes = []
+        self.optimizers = []
+        for i, arch_dict in enumerate(train_cfg.architectures):
+            sae = DeepSAE(
+                encoder_dim_mults=arch_dict["encoder_dim_mults"],
+                sparse_dim_mult=arch_dict["sparse_dim_mult"],
+                decoder_dim_mults=arch_dict["decoder_dim_mults"],
+                act_size=data_cfg.act_size,
+                enc_dtype=data_cfg.sae_dtype,
+                device="cpu",
+                topk=arch_dict["topk"],
+                act_l2_coeff=arch_dict["act_l2_coeff"],
+                name=arch_dict["name"],
+            )
+            optimizer = init_optimizer(sae, i)
+            self.saes.append(sae)
+            self.optimizers.append(optimizer)
+
+        # Instantiate shared memory
+        self.shared_memory = SharedMemory(self.saes, self.optimizers)
+
+        # Instantiate queues
+        self.gpu_tasks_queue = mp.Queue()
+        self.cpu_tasks_queue = mp.Queue()
+        self.results_queue = mp.Queue()
+
+        self.gpu_workers = []
+        # Instantiate workers
+        for device_id in range(DEVICE_COUNT):
+            gpu_worker_p = mp.Process(
+                target=gpu_worker,
+                args=(
+                    device_id,
+                    self.gpu_tasks_queue,
+                    self.results_queue,
+                    self.shared_memory,
+                ),
+            )
+            self.gpu_workers.append(gpu_worker_p)
+            gpu_worker_p.start()
+        self.n_gpu_outstanding_tasks = 0
+
+        self.cpu_worker_busy = False
+        self.cpu_worker = mp.Process(
+            target=cpu_worker,
+            args=(self.cpu_tasks_queue, self.results_queue, self.shared_memory),
         )
-        p.start()
-        workers.append(p)
+        self.cpu_worker.start()
 
-    logging.info("Building buffer...")
-    buffer = Buffer(results_queue, tasks_queue)
+        self.train_task_outstanding = False
 
-    logging.info("Building models in CPU...")
-    autoencoders = []
-    for i, arch_dict in enumerate(train_cfg.architectures):
-        autoenc = DeepSAE(
-            encoder_dim_mults=arch_dict["encoder_dim_mults"],
-            sparse_dim_mult=arch_dict["sparse_dim_mult"],
-            decoder_dim_mults=arch_dict["decoder_dim_mults"],
-            act_size=data_cfg.act_size,
-            enc_dtype=data_cfg.enc_dtype,
-            device="cpu",
-            topk=arch_dict["topk"],
-            act_l2_coeff=arch_dict["act_l2_coeff"],
-            name=arch_dict["name"],
-        )
-        optimizer = SparseAdam(
-            autoenc.get_param_groups(weight_decay=arch_dict["weight_decay"]),
-            lr=arch_dict["lr"],
-        )
+        # Two queues: act write queue and act read queue
+        # Whatever indices are not in the read and write queue are currently being written to
+        # If a block is done being read by all of the models, then add it to the write queue
 
-        autoencoders.append(
-            {
-                "model": autoenc,
-                "optimizer": optimizer,
-                "name": arch_dict["name"],
-                "n_iter": 0,
-                "act_freq_history": torch.zeros(autoenc.sparse_dim, dtype=torch.float),
-            }
-        )
+        # When a train task takes place, do we just add tasks for all of the models?
+        # Yes, because as long as there is one read block available, all of those models read from the same block
+        # so they will not spin until they are all done.
 
-    # Number of times we refresh the buffer
-    num_buffer_refreshes = train_cfg.num_tokens // data_cfg.buffer_size_tokens
-    logging.info(f"Will refresh buffer {num_buffer_refreshes} times")
+        # When we come across the read queue and it is below a certain threshold size, then we submit blocks from the write queue
+        # to workers.
 
-    try:
-        for outer_idx in tqdm.trange(num_buffer_refreshes, desc="Buffer refreshes"):
-            # Refresh buffer -> acts are placed in shared memory
-            buffer.refresh()
+        self.train_iter = 0
+        self.max_train_iter = train_cfg.num_tokens // data_cfg.act_block_size_tokens
 
-            # For each model, fork a local copy of the buffer object
-            # so that each worker’s pointer is reset, but data is shared
-            for model_entry in autoencoders:
-                logging.info(f"Enqueuing task for {model_entry['name']}")
-                buf_view = buffer.static_buffer.clone()  # <-- CHANGED (no large copy)
-                tasks_queue.put(
-                    (
-                        TaskType.TRAIN,
-                        {"model_entry": model_entry, "static_buffer": buf_view},
-                    )
+        self.tokens_write_queue = Queue(maxsize=data_cfg.n_token_blocks)
+        self.tokens_read_queue = Queue(maxsize=data_cfg.n_token_blocks)
+        for i in range(data_cfg.n_token_blocks):
+            self.tokens_write_queue.put(i)
+
+        self.acts_write_queue = Queue(maxsize=data_cfg.n_act_blocks)
+        self.acts_read_queue = Queue(maxsize=data_cfg.n_act_blocks)
+        for i in range(data_cfg.n_act_blocks):
+            self.acts_write_queue.put(i)
+
+        self.act_block_idx_to_model_idx = defaultdict(set)
+        self.act_block_idx_to_train_iter = {}
+
+        self.metrics_by_train_iter = []
+        for i in range(self.max_train_iter):
+            self.metrics_by_train_iter.append({})
+        self.metrics_by_train_iter_log_idx = 0
+
+        try:
+            self.pbar = tqdm.tqdm(total=self.max_train_iter, desc="Training")
+            while self.train_iter_done < self.max_train_iter:
+                assert (
+                    self.acts_write_queue.qsize() + self.acts_read_queue.qsize()
+                    <= data_cfg.n_act_blocks
                 )
+                if self.should_add_tokens_task():
+                    self.add_tokens_task()
+                elif self.should_add_acts_task():
+                    self.add_acts_task()
+                elif self.should_add_train_task():
+                    self.add_train_task()
+                else:
+                    result = self.results_queue.get()
+                    self.handle_result(result)
+        finally:
+            self.finish()
 
-            # Collect results for each model
-            updated_autoencoders = []
-            all_metrics = []
-            for _ in range(len(autoencoders)):
-                result = results_queue.get()
-                if isinstance(result, tuple) and result[0] == "error":
-                    error_info = result[1]
-                    error_msg = (
-                        f"Worker error on device {error_info['device_id']} "
-                        f"for model {error_info['model_name']}:\n"
-                        f"{error_info['error_type']}: {error_info['error_message']}\n"
-                        f"Traceback:\n{error_info['traceback']}"
-                    )
-                    logging.error(error_msg)
-                    raise RuntimeError(error_msg)
-                model_entry, metrics_list = result
-                updated_autoencoders.append(model_entry)
-                all_metrics.extend(metrics_list)
-                logging.info(f"Collected results for {model_entry['name']}")
+    def should_add_tokens_task(self):
+        if self.cpu_worker_busy:
+            return False
+        return (
+            self.tokens_read_queue.qsize() < data_cfg.get_tokens_blocks_threshold
+            and not self.tokens_write_queue.empty()
+        )
 
-            # Reassign
-            autoencoders = updated_autoencoders
+    def add_tokens_task(self):
+        token_block_idx = self.tokens_write_queue.get(block=False)
+        task = (TaskType.TOKENS, {"token_block_idx": token_block_idx})
+        self.cpu_tasks_queue.put(task)
+        self.cpu_worker_busy = True
 
-            # Group step metrics and log them
-            metrics_by_step = {}
-            logging.info(f"Grouping metrics for {len(all_metrics)} steps")
-            logging.info(f"Metrics[0]: {all_metrics[0]}")
-            for m in all_metrics:
-                arch_name = m["arch_name"]
-                step_idx = m["n_iter"]
-                # Initialize the dict for this step if it doesn't exist
-                if step_idx not in metrics_by_step:
-                    metrics_by_step[step_idx] = {}
-                metrics_by_step[step_idx].update(
-                    {
-                        f"{arch_name}_{k}": v
-                        for k, v in m.items()
-                        if k not in ["arch_name", "n_iter"]
-                    }
+    def should_add_acts_task(self):
+        if self.n_gpu_outstanding_tasks >= DEVICE_COUNT:
+            return False
+        return (
+            self.acts_read_queue.qsize() < data_cfg.get_acts_blocks_threshold
+            and not self.acts_write_queue.empty()
+            and not self.tokens_read_queue.empty()
+        )
+
+    def add_acts_task(self):
+        # Allocate token block (read) to this task
+        token_block_idx = self.tokens_read_queue.get(block=False)
+        # Allocate act block (write) to this task
+        act_block_idx = self.acts_write_queue.get(block=False)
+        task = (
+            TaskType.ACTS,
+            {"token_block_idx": token_block_idx, "act_block_idx": act_block_idx},
+        )
+        self.gpu_tasks_queue.put(task)
+        self.n_gpu_outstanding_tasks += 1
+
+    def should_add_train_task(self):
+        if self.n_gpu_outstanding_tasks >= DEVICE_COUNT:
+            return False
+        return not self.acts_read_queue.empty() and not self.train_task_outstanding
+
+    def add_train_task(self):
+        # Allocate act block (read) to this task
+        act_block_idx = self.acts_read_queue.get(block=False)
+        assert len(self.act_block_idx_to_model_idx[act_block_idx]) == 0
+        for model_idx in range(len(train_cfg.architectures)):
+            task = (
+                TaskType.TRAIN,
+                {"model_idx": model_idx, "act_block_idx": act_block_idx},
+            )
+            self.gpu_tasks_queue.put(task)
+            self.n_gpu_outstanding_tasks += 1
+            self.act_block_idx_to_model_idx[act_block_idx].add(model_idx)
+        self.metrics_by_train_iter[self.train_iter]["training_state"] = (
+            self.get_training_state()
+        )
+        self.act_block_idx_to_train_iter[act_block_idx] = self.train_iter
+        self.train_iter += 1
+        self.train_task_outstanding = True
+
+    @property
+    def train_iter_done(self):
+        # The number of indexed training tasks minus the number of outstanding
+        # training tasks
+        return self.train_iter - len(
+            [v for v in self.act_block_idx_to_model_idx.values() if len(v) > 0]
+        )
+
+    def handle_tokens_result(self, result_data):
+        token_block_idx = result_data["token_block_idx"]
+        self.tokens_read_queue.put(token_block_idx)
+        self.cpu_worker_busy = False
+
+    def handle_acts_result(self, result_data):
+        act_block_idx = result_data["act_block_idx"]
+        token_block_idx = result_data["token_block_idx"]
+        self.acts_read_queue.put(act_block_idx)
+        self.tokens_read_queue.put(token_block_idx)
+        self.n_gpu_outstanding_tasks -= 1
+
+    def handle_train_result(self, result_data):
+        model_idx = result_data["model_idx"]
+        act_block_idx = result_data["act_block_idx"]
+        train_iter = self.act_block_idx_to_train_iter[act_block_idx]
+        if train_iter > self.max_train_iter:
+            logging.warning(
+                f"Train iter {train_iter} is greater than max train iter {self.max_train_iter}"
+            )
+            return
+        self.act_block_idx_to_model_idx[act_block_idx].remove(model_idx)
+        if len(self.act_block_idx_to_model_idx[act_block_idx]) == 0:
+            self.acts_read_queue.put(act_block_idx)
+            self.train_task_outstanding = False
+        self.aggregate_and_log_metrics(result_data)
+
+    def aggregate_and_log_metrics(self, result_data):
+        metrics = result_data["metrics"]
+        model_idx = result_data["model_idx"]
+        new_metrics = {}
+        for k, v in metrics.items():
+            new_metrics[f"{self.train_cfg.architectures[model_idx]['name']}_{k}"] = v
+        metrics = new_metrics
+        act_block_idx = result_data["act_block_idx"]
+
+        # Update metrics entry
+        train_iter = self.act_block_idx_to_train_iter[act_block_idx]
+        metrics_for_train_iter = self.metrics_by_train_iter[train_iter]
+        metrics_for_train_iter[model_idx] = metrics
+
+        # If metrics are complete, add training state to these metrics If the
+        # log idx is the idx we're looking at, log this one and all subsequent
+        # completed ones until we reach an incomplete one
+        if (
+            self.metrics_are_complete(metrics_for_train_iter)
+            and self.metrics_by_train_iter_log_idx == train_iter
+        ):
+            while self.metrics_are_complete(
+                self.metrics_by_train_iter[self.metrics_by_train_iter_log_idx]
+            ):
+                self.log_metrics_for_train_iter(
+                    self.metrics_by_train_iter[self.metrics_by_train_iter_log_idx]
                 )
+                del self.metrics_by_train_iter[self.metrics_by_train_iter_log_idx]
+                self.metrics_by_train_iter_log_idx += 1
 
-            for step_idx in sorted(metrics_by_step.keys()):
-                log_dict = metrics_by_step[step_idx]
-                wandb.log(log_dict)
+    def metrics_are_complete(self, metrics_for_train_iter):
+        # +1 for training state
+        assert len(metrics_for_train_iter) <= len(train_cfg.architectures) + 1
+        return len(metrics_for_train_iter) == (len(train_cfg.architectures) + 1)
 
-    finally:
+    def log_metrics_for_train_iter(self, metrics_for_train_iter):
+        training_state = metrics_for_train_iter.pop("training_state")
+        for idx, metrics_for_batch_by_model in enumerate(
+            zip(*metrics_for_train_iter.values())
+        ):
+            metrics_for_batch = {}
+            for metrics_for_batch_for_model in metrics_for_batch_by_model:
+                metrics_for_batch.update(metrics_for_batch_for_model)
+            if idx == 0:
+                metrics_for_batch.update(training_state)
+            wandb.log(metrics_for_batch)
+
+    def get_training_state(self):
+        return (
+            self.cpu_worker_busy,
+            self.train_iter_done,
+            self.train_iter,
+            self.n_gpu_outstanding_tasks,
+            self.acts_read_queue.qsize(),
+            self.acts_write_queue.qsize(),
+            self.tokens_read_queue.qsize(),
+            self.tokens_write_queue.qsize(),
+        )
+
+    def handle_result(self, result):
+        if isinstance(result, Exception):
+            raise result
+        task_type: TaskType = result[0]
+        match task_type:
+            case TaskType.TOKENS:
+                self.handle_tokens_result(result[1])
+            case TaskType.ACTS:
+                self.handle_acts_result(result[1])
+            case TaskType.TRAIN:
+                self.handle_train_result(result[1])
+
+    def finish(self):
+        self.pbar.close()
+
         # Signal workers to stop
-        for _ in workers:
-            tasks_queue.put(None)
+        self.cpu_tasks_queue.put(None)
+        for _ in self.gpu_workers:
+            self.gpu_tasks_queue.put(None)
 
         logging.info("Saving all models...")
-        for entry in autoencoders:
+        for arch_dict, sae in zip(train_cfg.architectures, self.saes):
             try:
-                entry["model"].save(entry["name"], save_to_s3=train_cfg.save_to_s3)
+                sae.save(arch_dict["name"], save_to_s3=train_cfg.save_to_s3)
             except Exception as e:
-                logging.error(f"Error saving {entry['name']}: {e}")
+                logging.error(f"Error saving {arch_dict['name']}: {e}")
         wandb.finish()
 
-        for w in workers:
+        for w in self.gpu_workers:
             w.join()
+        self.cpu_worker.join()
 
 
 if __name__ == "__main__":
-    main()
+    Trainer().train()

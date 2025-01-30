@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -8,7 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mlsae.data import DTYPES
-import math
 
 model_dir = Path(__file__).parent / "checkpoints"
 
@@ -45,7 +45,7 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cuda:0",
         topk: int = 16,
-        act_l2_coeff: float = 0.,
+        act_l2_coeff: float = 0.0,
     ):
         super().__init__()
 
@@ -183,7 +183,7 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        l2_loss = (feature_acts ** 2).mean() * (self.act_l2_coeff / self.topk)
+        l2_loss = (feature_acts**2).mean() * (self.act_l2_coeff / self.topk)
 
         loss = mse_loss + l2_loss
 
@@ -275,6 +275,14 @@ class DeepSAE(nn.Module):
         self.device = self.sparse_encoder_block[0].weight.device
         self.dtype = self.sparse_encoder_block[0].weight.dtype
 
+    def copy_tensors_(self, other):
+        """
+        Only copies parameters
+        """
+        # Copy each parameter's data
+        for self_param, other_param in zip(self.parameters(), other.parameters()):
+            self_param.data.copy_(other_param.data)
+
 
 class SparseAdam(torch.optim.Optimizer):
     """
@@ -285,6 +293,16 @@ class SparseAdam(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, maximize=False):
         defaults = dict(lr=lr, betas=betas, eps=eps, maximize=maximize)
         super().__init__(params, defaults)
+
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.requires_grad:
+                    state = self.state[p]
+                    state["step"] = torch.zeros(
+                        1, dtype=torch.long, device=p.data.device
+                    )
+                    state["exp_avg"] = torch.zeros_like(p.data)
+                    state["exp_avg_sq"] = torch.zeros_like(p.data)
 
     def step(self, closure=None):
         loss = None
@@ -305,41 +323,89 @@ class SparseAdam(torch.optim.Optimizer):
                 if grad.is_sparse:
                     # This version is intended for dense gradients.
                     # Skip or raise an error as needed.
-                    raise RuntimeError(
-                        "DenseMaskAdam does not handle sparse gradients."
-                    )
+                    raise RuntimeError("SparseAdam does not handle sparse gradients.")
 
                 # Identify nonzero locations in the gradient
                 mask = grad != 0
 
-                # State initialization
                 state = self.state[p]
-                if len(state) == 0:
-                    state["step"] = 0
-                    state["exp_avg"] = torch.zeros_like(p.data)
-                    state["exp_avg_sq"] = torch.zeros_like(p.data)
-
                 exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
 
-                state["step"] += 1
-                step = state["step"]
+                # Increment step in place
+                state["step"].add_(1)
+                step_f = state["step"].float()  # For exponent calculations below
 
-                # Update moments for masked entries only
-                exp_avg[mask] = exp_avg[mask].mul_(beta1).add_(grad[mask], alpha=1 - beta1)
-                exp_avg_sq[mask] = exp_avg_sq[mask].mul_(beta2).addcmul_(grad[mask], grad[mask], value=1 - beta2)
+                # Update moments for masked entries only, all in place
+                exp_avg[mask].mul_(beta1)
+                exp_avg[mask].add_(grad[mask], alpha=1 - beta1)
+
+                exp_avg_sq[mask].mul_(beta2)
+                exp_avg_sq[mask].addcmul_(grad[mask], grad[mask], value=1 - beta2)
 
                 # Bias correction
-                bias_correction1 = 1 - beta1 ** step
-                bias_correction2 = 1 - beta2 ** step
+                bias_correction1 = 1 - beta1**step_f
+                bias_correction2 = 1 - beta2**step_f
 
                 # Compute step size
-                denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+                denom = (exp_avg_sq.sqrt() / torch.sqrt(bias_correction2)) + eps
                 step_size = lr / bias_correction1
 
-                # Update parameters at masked locations
+                # Update parameters at masked locations in place
                 if not maximize:
-                    p.data[mask] -= step_size * (exp_avg[mask] / denom[mask])
+                    p.data[mask].sub_(step_size * (exp_avg[mask] / denom[mask]))
                 else:
-                    p.data[mask] += step_size * (exp_avg[mask] / denom[mask])
+                    p.data[mask].add_(step_size * (exp_avg[mask] / denom[mask]))
 
         return loss
+
+    def share_memory_(self):
+        """
+        Moves state tensors to shared memory, allowing
+        multiprocessing sharing of the optimizer state.
+        """
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state.get(p, None)
+                if not state:
+                    continue
+
+                state["step"].share_memory_()
+                state["exp_avg"].share_memory_()
+                state["exp_avg_sq"].share_memory_()
+
+        # Returning self allows for optional chaining.
+        return self
+
+    def to(self, *args, **kwargs):
+        """
+        Moves the optimizer state tensors to a specified device/dtype.
+        """
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.requires_grad:
+                    state = self.state[p]
+                    for k, v in state.items():
+                        if torch.is_tensor(v):
+                            state[k] = v.to(*args, **kwargs)
+        return self
+
+    def copy_tensors_(self, other):
+        """
+        Copies the parameter groups and state from another SparseAdam instance.
+        """
+        if len(self.param_groups) != len(other.param_groups):
+            raise ValueError(
+                "Cannot copy_ from an optimizer with different param group sizes."
+            )
+
+        assert len(self.param_groups) == len(other.param_groups)
+
+        for group_self, group_other in zip(self.param_groups, other.param_groups):
+            for p_self, p_other in zip(group_self["params"], group_other["params"]):
+                if p_self.requires_grad:
+                    if p_self.data.size() != p_other.data.size():
+                        raise ValueError("Param size mismatch in SparseAdam copy_.")
+                    state = self.state[p_self]
+                    state["step"].copy_(other.state[p_other]["step"])
+                    state["exp_avg"].copy_(other.state[p_other]["exp_avg"])
+                    state["exp_avg_sq"].copy_(other.state[p_other]["exp_avg_sq"])
