@@ -311,23 +311,32 @@ class DeepSAE(nn.Module):
         Creates a new DeepSAE instance with the same architecture/configuration and
         copies over the current parameters from self.
         """
-        # Reconstruct original dimension multipliers by dividing stored absolute dims by act_size
-        new_encoder_dim_mults = [dim / self.act_size for dim in self.encoder_dims]
-        new_decoder_dim_mults = [dim / self.act_size for dim in self.decoder_dims]
-        new_sparse_dim_mult = self.sparse_dim / self.act_size
+        if self.__class__ is DeepSAE:
+            # Reconstruct original dimension multipliers by dividing stored absolute dims by act_size
+            new_encoder_dim_mults = [dim / self.act_size for dim in self.encoder_dims]
+            new_decoder_dim_mults = [dim / self.act_size for dim in self.decoder_dims]
+            new_sparse_dim_mult = self.sparse_dim / self.act_size
 
-        # Instantiate a new model with identical hyperparameters
-        new_sae = DeepSAE(
-            encoder_dim_mults=new_encoder_dim_mults,
-            sparse_dim_mult=new_sparse_dim_mult,
-            decoder_dim_mults=new_decoder_dim_mults,
-            act_size=self.act_size,
-            name=self.name,
-            enc_dtype=self.enc_dtype,
-            device=self.device,
-            topk=self.topk,
-            act_l2_coeff=self.act_l2_coeff,
-        )
+            # Instantiate a new model with identical hyperparameters
+            new_sae = DeepSAE(
+                encoder_dim_mults=new_encoder_dim_mults,
+                sparse_dim_mult=new_sparse_dim_mult,
+                decoder_dim_mults=new_decoder_dim_mults,
+                act_size=self.act_size,
+                name=self.name,
+                enc_dtype=self.enc_dtype,
+                device=self.device,
+                topk=self.topk,
+                act_l2_coeff=self.act_l2_coeff,
+                weight_decay=self.weight_decay,
+                lr=self.lr,
+            )
+        
+        else:
+            new_sae = self.__class__(
+                act_size=self.act_size,
+                device=self.device,
+            )
 
         # Copy parameter data from the current model
         new_sae.copy_tensors_(self)
