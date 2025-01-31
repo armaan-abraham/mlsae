@@ -90,6 +90,14 @@ def task_generate(
     task_data: dict,
     shared_memory: SharedMemory,
 ):
+    current_mem = torch.cuda.memory_allocated(device) / 1024**3
+    logging.info(f"Starting activation generation device {device}. Current GPU memory: {current_mem:.2f}GB")
+
+    try:
+        torch.cuda.reset_peak_memory_stats(torch.device(device))
+    except Exception as e:
+        logging.error(f"Failed to reset peak memory stats for device {device}: {e}")
+    
     # It's not ideal that we are moving the llm to and from CPU every time we
     # get this task, but it is acceptable so we can have a GPU work on both act
     # generation and training
@@ -103,7 +111,7 @@ def task_generate(
     with torch.no_grad():
         with torch.autocast("cuda", dtype=DTYPES[data_cfg.sae_dtype]):
             for start in range(0, token_block.shape[0], data_cfg.llm_batch_size_seqs):
-                subblock = token_block[start : start + data_cfg.llm_batch_size_seqs]
+                subblock = token_block[start : start + data_cfg.llm_batch_size_seqs].to(device)
                 _, cache = local_llm.run_with_cache(
                     subblock,
                     stop_at_layer=data_cfg.layer + 1,
@@ -131,6 +139,12 @@ def task_generate(
     )
 
     local_llm.to("cpu")
+
+    try:
+        peak_mem = torch.cuda.max_memory_allocated(torch.device(device)) / 1024**3
+        logging.info(f"Finished activation generation device {device}. Peak GPU memory: {peak_mem:.2f}GB")
+    except Exception as e:
+        logging.error(f"Failed to get peak memory stats for device {device}: {e}")
 
 
 def init_optimizer(model: DeepSAE, model_idx: int):
@@ -180,6 +194,14 @@ def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Ten
 def task_train(
     results: mp.Queue, device: str, task_data: dict, shared_memory: SharedMemory
 ):
+    current_mem = torch.cuda.memory_allocated(device) / 1024**3
+    logging.info(f"Starting training device {device}. Current GPU memory: {current_mem:.2f}GB")
+
+    try:
+        torch.cuda.reset_peak_memory_stats(torch.device(device))
+    except Exception as e:
+        logging.error(f"Failed to reset peak memory stats for device {device}: {e}")
+    
     model_idx = task_data["model_idx"]
     act_block_idx = task_data["act_block_idx"]
 
@@ -189,7 +211,7 @@ def task_train(
     optimizer.copy_tensors_(shared_memory["optimizers"][model_idx])
     act_freq_history = shared_memory["act_freq_history"][model_idx].to(device)
     n_iter = shared_memory["n_iter"][model_idx].to(device)
-    act_block = shared_memory["act_blocks"][act_block_idx].clone()
+    act_block = shared_memory["act_blocks"][act_block_idx]
 
     assert (
         act_block.shape[0] == data_cfg.act_block_size_tokens
@@ -243,11 +265,21 @@ def task_train(
         f"End: Device {device}, Model {model_idx}, Loss: {loss.item()}, L2 loss: {l2_loss.item()}"
     )
 
+    del acts
+
     # update shared memory
     shared_memory["act_freq_history"][model_idx].copy_(act_freq_history)
     shared_memory["n_iter"][model_idx].copy_(n_iter)
     shared_memory["optimizers"][model_idx].copy_tensors_(optimizer)
     shared_memory["models"][model_idx].copy_tensors_(model)
+
+    del model
+
+    try:
+        peak_mem = torch.cuda.max_memory_allocated(torch.device(device)) / 1024**3
+        logging.info(f"Finished training device {device}. Peak GPU memory: {peak_mem:.2f}GB")
+    except Exception as e:
+        logging.error(f"Failed to get peak memory stats for device {device}: {e}")
 
     result_data = {
         "metrics": metrics_list,
