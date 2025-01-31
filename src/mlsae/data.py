@@ -7,6 +7,7 @@ import einops
 import numpy as np
 import torch
 from datasets import load_dataset
+import aiohttp
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
@@ -149,6 +150,12 @@ def tokenize_and_concatenate(
 
 
 def stream_training_chunks(eval: bool = False):
+    CLIENT_TIMEOUT_SECONDS = 60 * 60
+    storage_options = {
+        'client_kwargs': {
+            'timeout': aiohttp.ClientTimeout(total=CLIENT_TIMEOUT_SECONDS),
+        }
+    }
     dataset_iter = load_dataset(
         data_cfg.dataset_name,
         "en",
@@ -156,9 +163,10 @@ def stream_training_chunks(eval: bool = False):
         streaming=True,
         cache_dir=cache_dir,
         trust_remote_code=True,
+        storage_options=storage_options,
     )
-    dataset_iter = keep_single_column(dataset_iter, data_cfg.dataset_column_name)
 
+    dataset_iter = keep_single_column(dataset_iter, data_cfg.dataset_column_name)
     dataset_iter = dataset_iter.batch(data_cfg.dataset_batch_size_entries)
 
     dataset_iter = tokenize_and_concatenate(
