@@ -5,7 +5,7 @@ import torch
 import torch.multiprocessing as mp
 import transformer_lens
 
-from mlsae.config import DTYPES, data_cfg, train_cfg, DEVICE_COUNT
+from mlsae.config import DEVICE_COUNT, DTYPES, data_cfg, train_cfg
 from mlsae.data import stream_training_chunks
 from mlsae.model import DeepSAE, SparseAdam
 from mlsae.shared_memory import SharedMemory
@@ -91,13 +91,15 @@ def task_generate(
     shared_memory: SharedMemory,
 ):
     current_mem = torch.cuda.memory_allocated(device) / 1024**3
-    logging.info(f"Starting activation generation device {device}. Current GPU memory: {current_mem:.2f}GB")
+    logging.info(
+        f"Starting activation generation device {device}. Current GPU memory: {current_mem:.2f}GB"
+    )
 
     try:
         torch.cuda.reset_peak_memory_stats(torch.device(device))
     except Exception as e:
         logging.error(f"Failed to reset peak memory stats for device {device}: {e}")
-    
+
     # It's not ideal that we are moving the llm to and from CPU every time we
     # get this task, but it is acceptable so we can have a GPU work on both act
     # generation and training
@@ -111,7 +113,9 @@ def task_generate(
     with torch.no_grad():
         with torch.autocast("cuda", dtype=DTYPES[data_cfg.sae_dtype]):
             for start in range(0, token_block.shape[0], data_cfg.llm_batch_size_seqs):
-                subblock = token_block[start : start + data_cfg.llm_batch_size_seqs].to(device)
+                subblock = token_block[start : start + data_cfg.llm_batch_size_seqs].to(
+                    device
+                )
                 _, cache = local_llm.run_with_cache(
                     subblock,
                     stop_at_layer=data_cfg.layer + 1,
@@ -142,15 +146,15 @@ def task_generate(
 
     try:
         peak_mem = torch.cuda.max_memory_allocated(torch.device(device)) / 1024**3
-        logging.info(f"Finished activation generation device {device}. Peak GPU memory: {peak_mem:.2f}GB")
+        logging.info(
+            f"Finished activation generation device {device}. Peak GPU memory: {peak_mem:.2f}GB"
+        )
     except Exception as e:
         logging.error(f"Failed to get peak memory stats for device {device}: {e}")
 
 
-def init_optimizer(model: DeepSAE, model_idx: int):
-    weight_decay = train_cfg.architectures[model_idx]["weight_decay"]
-    lr = train_cfg.architectures[model_idx]["lr"]
-    return SparseAdam(model.get_param_groups(weight_decay=weight_decay), lr=lr)
+def init_optimizer(model: DeepSAE):
+    return SparseAdam(model.get_param_groups())
 
 
 def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Tensor):
@@ -159,6 +163,9 @@ def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Ten
     weight/bias and the first decoder layer's weight. This avoids using stale moment
     estimates for brand-new features.
     """
+    if not model.should_resample_sparse_features(idx):
+        return
+
     model.resample_sparse_features(idx)
 
     enc_layer = model.sparse_encoder_block[0]  # Linear for the sparse encoder
@@ -195,19 +202,21 @@ def task_train(
     results: mp.Queue, device: str, task_data: dict, shared_memory: SharedMemory
 ):
     current_mem = torch.cuda.memory_allocated(device) / 1024**3
-    logging.info(f"Starting training device {device}. Current GPU memory: {current_mem:.2f}GB")
+    logging.info(
+        f"Starting training device {device}. Current GPU memory: {current_mem:.2f}GB"
+    )
 
     try:
         torch.cuda.reset_peak_memory_stats(torch.device(device))
     except Exception as e:
         logging.error(f"Failed to reset peak memory stats for device {device}: {e}")
-    
+
     model_idx = task_data["model_idx"]
     act_block_idx = task_data["act_block_idx"]
 
     model = shared_memory["models"][model_idx].clone()
     model.to(device)
-    optimizer = init_optimizer(model, model_idx)
+    optimizer = init_optimizer(model)
     optimizer.copy_tensors_(shared_memory["optimizers"][model_idx])
     act_freq_history = shared_memory["act_freq_history"][model_idx].to(device)
     n_iter = shared_memory["n_iter"][model_idx].to(device)
@@ -276,7 +285,9 @@ def task_train(
 
     try:
         peak_mem = torch.cuda.max_memory_allocated(torch.device(device)) / 1024**3
-        logging.info(f"Finished training device {device}. Peak GPU memory: {peak_mem:.2f}GB")
+        logging.info(
+            f"Finished training device {device}. Peak GPU memory: {peak_mem:.2f}GB"
+        )
     except Exception as e:
         logging.error(f"Failed to get peak memory stats for device {device}: {e}")
 

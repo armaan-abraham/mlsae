@@ -34,18 +34,21 @@ class TopKActivation(nn.Module):
         return x * mask
 
 
+# TODO check imports of DeepSAE
 class DeepSAE(nn.Module):
     def __init__(
         self,
+        act_size: int,
         encoder_dim_mults: list[float],
         sparse_dim_mult: float,
         decoder_dim_mults: list[float],
-        act_size: int,
         name: str = None,
         enc_dtype: str = "fp32",
-        device: str = "cuda:0",
+        device: str = "cpu",
         topk: int = 16,
         act_l2_coeff: float = 0.0,
+        weight_decay: float = 1e-4,
+        lr: float = 1e-4,
     ):
         super().__init__()
 
@@ -61,8 +64,10 @@ class DeepSAE(nn.Module):
         self.topk = topk
         assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
         self.act_l2_coeff = act_l2_coeff
-        self.track_acts_stats = False
+        self.weight_decay = weight_decay
+        self.lr = lr
 
+        self.track_acts_stats = False
         # Tracking stats
         self.acts_sum = 0.0
         self.acts_sq_sum = 0.0
@@ -75,13 +80,11 @@ class DeepSAE(nn.Module):
         logging.info(f"Device: {self.device}")
         logging.info(f"Dtype: {self.dtype}")
 
-        # Parameter groups for L2
-        self.params_with_decay = []
-        self.params_no_decay = []
+        self._init_params()
 
-        # --------------------------------------------------------
-        # Build encoder
-        # --------------------------------------------------------
+        self.to(self.device, self.dtype)
+
+    def _init_encoder_params(self):
         self.dense_encoder_blocks = torch.nn.ModuleList()
         in_dim = self.act_size
 
@@ -102,27 +105,28 @@ class DeepSAE(nn.Module):
             TopKActivation(self.topk),
         )
 
-        # --------------------------------------------------------
-        # Build decoder
-        # --------------------------------------------------------
-        decoder_blocks = []
+    def _init_decoder_params(self):
+        self.decoder_blocks = nn.ModuleList()
         in_dim = self.sparse_dim
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
                 in_dim, dim, apply_weight_decay=True
             )
-            decoder_blocks.append(linear_layer)
-            decoder_blocks.append(nn.ReLU())
+            self.decoder_blocks.append(linear_layer)
+            self.decoder_blocks.append(nn.ReLU())
             in_dim = dim
 
-        decoder_blocks.append(
+        self.decoder_blocks.append(
             self._create_linear_layer(in_dim, self.act_size, apply_weight_decay=False)
         )
 
-        self.decoder = nn.Sequential(*decoder_blocks)
+    def _init_params(self):
+        self.params_with_decay = []
+        self.params_no_decay = []
 
-        self.to(self.device, self.dtype)
+        self._init_encoder_params()
+        self._init_decoder_params()
 
     def start_act_stat_tracking(self):
         """
@@ -156,18 +160,22 @@ class DeepSAE(nn.Module):
 
         return layer
 
-    def get_param_groups(self, weight_decay=1e-4):
+    def get_param_groups(self):
         """
         Return parameter groups for the optimizer:
           - One group with weight_decay
           - One group without weight_decay
         """
         return [
-            {"params": self.params_with_decay, "weight_decay": weight_decay},
-            {"params": self.params_no_decay, "weight_decay": 0.0},
+            {
+                "params": self.params_with_decay,
+                "weight_decay": self.weight_decay,
+                "lr": self.lr,
+            },
+            {"params": self.params_no_decay, "weight_decay": 0.0, "lr": self.lr},
         ]
 
-    def forward(self, x):
+    def _forward(self, x):
         # Encode
         if self.encoder_dims:
             resid = x
@@ -177,15 +185,23 @@ class DeepSAE(nn.Module):
         else:
             resid = x
 
-        feature_acts = self.sparse_encoder_block(resid)
+        resid = feature_acts = self.sparse_encoder_block(resid)
 
-        reconstructed = self.decoder(feature_acts)
+        for block in self.decoder_blocks:
+            resid = block(resid)
+
+        reconstructed = resid
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
         l2_loss = (feature_acts**2).mean() * (self.act_l2_coeff / self.topk)
 
         loss = mse_loss + l2_loss
+
+        return loss, l2_loss, mse_loss, feature_acts, reconstructed
+
+    def forward(self, x):
+        loss, l2_loss, mse_loss, feature_acts, reconstructed = self._forward(x)
 
         # Optionally track activation stats and MSE
         if self.track_acts_stats:
@@ -224,7 +240,7 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        w = self.decoder[-1].weight
+        w = self.decoder_blocks[-1].weight
         w_normed = w / w.norm(dim=-1, keepdim=True)
         if w.grad is not None:
             w_dec_grad_proj = (w.grad * w_normed).sum(-1, keepdim=True) * w_normed
@@ -258,11 +274,14 @@ class DeepSAE(nn.Module):
             load_from_s3=load_from_s3,
         )
 
+    def should_resample_sparse_features(self, idx):
+        return False
+
     @torch.no_grad()
     def resample_sparse_features(self, idx):
         logging.info(f"Resampling sparse features {idx.sum().item()}")
         enc_layer = self.sparse_encoder_block[0]
-        dec_layer = self.decoder[0]
+        dec_layer = self.decoder_blocks[0]
         new_W_enc = torch.zeros_like(enc_layer.weight)
         new_W_dec = torch.zeros_like(dec_layer.weight)
         nn.init.kaiming_normal_(new_W_enc)
@@ -314,6 +333,7 @@ class DeepSAE(nn.Module):
         new_sae.copy_tensors_(self)
 
         return new_sae
+
 
 class SparseAdam(torch.optim.Optimizer):
     """

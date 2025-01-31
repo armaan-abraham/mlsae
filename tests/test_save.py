@@ -1,4 +1,4 @@
-from mlsae.model import DeepSAE
+from mlsae.model.model import DeepSAE
 
 
 def test_save():

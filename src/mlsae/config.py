@@ -66,7 +66,6 @@ class TrainConfig:
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
-
             # === 1-0 ===
             # Varying l2 coeff
             {
@@ -100,7 +99,6 @@ class TrainConfig:
                 "topk": 64,
                 "act_l2_coeff": 0.05,
             },
-
             # === 1-1 ===
             # Varying l2 coeff
             {

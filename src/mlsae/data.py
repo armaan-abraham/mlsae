@@ -3,11 +3,11 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
+import aiohttp
 import einops
 import numpy as np
 import torch
 from datasets import load_dataset
-import aiohttp
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
@@ -152,8 +152,8 @@ def tokenize_and_concatenate(
 def stream_training_chunks(eval: bool = False):
     CLIENT_TIMEOUT_SECONDS = 60 * 60
     storage_options = {
-        'client_kwargs': {
-            'timeout': aiohttp.ClientTimeout(total=CLIENT_TIMEOUT_SECONDS),
+        "client_kwargs": {
+            "timeout": aiohttp.ClientTimeout(total=CLIENT_TIMEOUT_SECONDS),
         }
     }
     dataset_iter = load_dataset(

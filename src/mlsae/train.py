@@ -1,12 +1,8 @@
 import logging
-from collections import defaultdict
-from dataclasses import dataclass, field
 from queue import Queue
 
-import torch
 import torch.multiprocessing as mp
 import tqdm
-
 import wandb
 
 logging.basicConfig(
@@ -16,7 +12,7 @@ logging.basicConfig(
 )
 
 from mlsae.config import DEVICE_COUNT, data_cfg, train_cfg
-from mlsae.model import DeepSAE, SparseAdam
+from mlsae.model import models
 from mlsae.shared_memory import SharedMemory
 from mlsae.worker import TaskType, cpu_worker, gpu_worker, init_optimizer
 
@@ -33,19 +29,12 @@ class Trainer:
         logging.info("Instantiating models and optimizers")
         self.saes = []
         self.optimizers = []
-        for i, arch_dict in enumerate(train_cfg.architectures):
-            sae = DeepSAE(
-                encoder_dim_mults=arch_dict["encoder_dim_mults"],
-                sparse_dim_mult=arch_dict["sparse_dim_mult"],
-                decoder_dim_mults=arch_dict["decoder_dim_mults"],
+        for model in models:
+            sae = model(
                 act_size=data_cfg.act_size,
-                enc_dtype=data_cfg.sae_dtype,
                 device="cpu",
-                topk=arch_dict["topk"],
-                act_l2_coeff=arch_dict["act_l2_coeff"],
-                name=arch_dict["name"],
             )
-            optimizer = init_optimizer(sae, i)
+            optimizer = init_optimizer(sae)
             self.saes.append(sae)
             self.optimizers.append(optimizer)
 
