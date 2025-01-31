@@ -95,7 +95,7 @@ class Trainer:
         for i in range(data_cfg.n_act_blocks):
             self.acts_write_queue.put(i)
 
-        self.training_needed_for_model_idx = set(range(len(train_cfg.architectures)))
+        self.training_needed_for_model_idx = set(range(len(self.saes)))
         self.training_completed_for_model_idx = set()
         self.act_block_idx_current_training = None
 
@@ -179,7 +179,7 @@ class Trainer:
             (
                 self.acts_read_queue.empty()
                 and len(self.training_needed_for_model_idx)
-                == len(train_cfg.architectures)
+                == len(self.saes)
             )
             # We have a GPU to spare as other GPUs are busy training models but
             # there are no more models to train for this iteration
@@ -217,7 +217,7 @@ class Trainer:
         if self.act_block_idx_current_training is None:
             self.act_block_idx_current_training = self.acts_read_queue.get(block=False)
             assert len(self.training_needed_for_model_idx) == len(
-                train_cfg.architectures
+                self.saes
             )
 
         # Take one model that needs to be trained, and it to the task queue
@@ -256,13 +256,13 @@ class Trainer:
         )
         self.training_completed_for_model_idx.add(model_idx)
         should_log = False
-        if len(self.training_completed_for_model_idx) == len(train_cfg.architectures):
+        if len(self.training_completed_for_model_idx) == len(self.saes):
             self.acts_write_queue.put(act_block_idx)
             self.pbar.update(1)
             self.train_iter += 1
             # Add models back to train idx
             self.training_needed_for_model_idx = set(
-                range(len(train_cfg.architectures))
+                range(len(self.saes))
             )
             self.training_completed_for_model_idx = set()
             self.act_block_idx_current_training = None
@@ -282,7 +282,7 @@ class Trainer:
         ):
             for k, v in metrics_for_batch.items():
                 aggregate_metrics_for_batch[
-                    f"{train_cfg.architectures[model_idx]['name']}_{k}"
+                    f"{self.saes[model_idx]['name']}_{k}"
                 ] = v
 
         if should_log:
@@ -327,11 +327,11 @@ class Trainer:
             self.gpu_tasks_queue.put(None)
 
         logging.info("Saving all models...")
-        for arch_dict, sae in zip(train_cfg.architectures, self.saes):
+        for sae in self.saes:
             try:
-                sae.save(arch_dict["name"], save_to_s3=train_cfg.save_to_s3)
+                sae.save(sae.name, save_to_s3=train_cfg.save_to_s3)
             except Exception as e:
-                logging.error(f"Error saving {arch_dict['name']}: {e}")
+                logging.error(f"Error saving {sae.name}: {e}")
         wandb.finish()
 
         for w in self.gpu_workers:
