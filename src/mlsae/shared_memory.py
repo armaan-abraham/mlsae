@@ -1,6 +1,6 @@
 import torch
 
-from mlsae.config import data_cfg, DTYPES
+from mlsae.config import DTYPES, data_cfg
 from mlsae.model import DeepSAE, SparseAdam
 
 

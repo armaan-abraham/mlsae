@@ -9,10 +9,10 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     sae_batch_size_tokens: int = 131072
-    act_block_size_sae_batch_size_mult: int = 16
+    act_block_size_sae_batch_size_mult: int = 64
 
-    seq_len: int = 128
-    llm_batch_size_seqs: int = 256
+    seq_len: int = 64
+    llm_batch_size_seqs: int = 512
 
     sae_dtype: str = "fp32"
     cache_dtype: str = "bf16"
@@ -25,8 +25,8 @@ class DataConfig:
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
 
-    n_token_blocks: int = 5
-    n_act_blocks: int = 3
+    n_token_blocks: int = 2
+    n_act_blocks: int = 2
 
     @property
     def act_block_size_tokens(self) -> int:
@@ -52,7 +52,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
@@ -62,7 +62,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.6,
             },
@@ -72,10 +72,11 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 1.2,
             },
+
             # === 1-0 ===
             # Varying l2 coeff
             {
@@ -84,7 +85,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
@@ -94,7 +95,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.6,
             },
@@ -104,7 +105,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 1.2,
             },
@@ -115,7 +116,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 2e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
@@ -125,10 +126,11 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [],
                 "weight_decay": 4e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
+
             # === 1-1 ===
             # Varying l2 coeff
             {
@@ -137,7 +139,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
@@ -147,7 +149,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.6,
             },
@@ -157,7 +159,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
                 "weight_decay": 1e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 1.2,
             },
@@ -168,7 +170,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
                 "weight_decay": 2e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
@@ -178,7 +180,7 @@ class TrainConfig:
                 "sparse_dim_mult": 16,
                 "decoder_dim_mults": [1],
                 "weight_decay": 4e-4,
-                "lr": 1e-4,
+                "lr": 1.5e-4,
                 "topk": 64,
                 "act_l2_coeff": 0.3,
             },
@@ -188,7 +190,7 @@ class TrainConfig:
     num_tokens: int = int(3e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    save_to_s3: bool = False
+    save_to_s3: bool = True
 
     measure_dead_over_n_batches: int = 15
     # For now, we skip resampling. Just set to high value.

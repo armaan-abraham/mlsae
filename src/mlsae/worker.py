@@ -56,7 +56,9 @@ def gpu_worker(
     device = f"cuda:{device_id}"
     logging.info(f"Starting worker on device {device}")
     local_llm = None
-    assert device_id >= 0 and device_id < DEVICE_COUNT, f"Device id {device_id} is out of range"
+    assert (
+        device_id >= 0 and device_id < DEVICE_COUNT
+    ), f"Device id {device_id} is out of range"
 
     try:
         while True:
@@ -181,13 +183,13 @@ def task_train(
     model_idx = task_data["model_idx"]
     act_block_idx = task_data["act_block_idx"]
 
-    model = shared_memory["models"][model_idx]
+    model = shared_memory["models"][model_idx].clone()
     model.to(device)
     optimizer = init_optimizer(model, model_idx)
     optimizer.copy_tensors_(shared_memory["optimizers"][model_idx])
     act_freq_history = shared_memory["act_freq_history"][model_idx].to(device)
     n_iter = shared_memory["n_iter"][model_idx].to(device)
-    act_block = shared_memory["act_blocks"][act_block_idx].to(device)
+    act_block = shared_memory["act_blocks"][act_block_idx].clone()
 
     assert (
         act_block.shape[0] == data_cfg.act_block_size_tokens
@@ -198,7 +200,7 @@ def task_train(
     # This loop is fine, as we assert that the act block size is correct above,
     # and we set the act block size as a multiple of the SAE batch size
     for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
-        acts = act_block[start : start + data_cfg.sae_batch_size_tokens]
+        acts = act_block[start : start + data_cfg.sae_batch_size_tokens].to(device)
 
         loss, l2_loss, feature_acts, _ = model(acts)
         loss.backward()
@@ -206,6 +208,11 @@ def task_train(
         model.make_decoder_weights_and_grad_unit_norm()
         optimizer.step()
         optimizer.zero_grad()
+
+        if start == 0:
+            logging.info(
+                f"Start: Device {device}, Model {model_idx}, Loss: {loss.item()}, L2 loss: {l2_loss.item()}, Optimizer step: {optimizer.get_step().item()}"
+            )
 
         act_freq_batch = (feature_acts > 0).float().mean(dim=0)
         act_freq_history += act_freq_batch
@@ -231,6 +238,10 @@ def task_train(
 
         metrics_list.append(metrics)
         n_iter += 1
+
+    logging.info(
+        f"End: Device {device}, Model {model_idx}, Loss: {loss.item()}, L2 loss: {l2_loss.item()}"
+    )
 
     # update shared memory
     shared_memory["act_freq_history"][model_idx].copy_(act_freq_history)

@@ -283,6 +283,33 @@ class DeepSAE(nn.Module):
         for self_param, other_param in zip(self.parameters(), other.parameters()):
             self_param.data.copy_(other_param.data)
 
+    def clone(self):
+        """
+        Creates a new DeepSAE instance with the same architecture/configuration and
+        copies over the current parameters from self.
+        """
+        # Reconstruct original dimension multipliers by dividing stored absolute dims by act_size
+        new_encoder_dim_mults = [dim / self.act_size for dim in self.encoder_dims]
+        new_decoder_dim_mults = [dim / self.act_size for dim in self.decoder_dims]
+        new_sparse_dim_mult = self.sparse_dim / self.act_size
+
+        # Instantiate a new model with identical hyperparameters
+        new_sae = DeepSAE(
+            encoder_dim_mults=new_encoder_dim_mults,
+            sparse_dim_mult=new_sparse_dim_mult,
+            decoder_dim_mults=new_decoder_dim_mults,
+            act_size=self.act_size,
+            name=self.name,
+            enc_dtype=self.enc_dtype,
+            device=self.device,
+            topk=self.topk,
+            act_l2_coeff=self.act_l2_coeff,
+        )
+
+        # Copy parameter data from the current model
+        new_sae.copy_tensors_(self)
+
+        return new_sae
 
 class SparseAdam(torch.optim.Optimizer):
     """
@@ -304,6 +331,14 @@ class SparseAdam(torch.optim.Optimizer):
                     state["exp_avg"] = torch.zeros_like(p.data)
                     state["exp_avg_sq"] = torch.zeros_like(p.data)
 
+    def get_step(self):
+        """Returns the step of the first parameter encountered"""
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.requires_grad:
+                    return self.state[p]["step"]
+        return 0
+
     def step(self, closure=None):
         loss = None
         if closure is not None:
@@ -323,38 +358,44 @@ class SparseAdam(torch.optim.Optimizer):
                 if grad.is_sparse:
                     # This version is intended for dense gradients.
                     # Skip or raise an error as needed.
-                    raise RuntimeError("SparseAdam does not handle sparse gradients.")
+                    raise RuntimeError(
+                        "DenseMaskAdam does not handle sparse gradients."
+                    )
 
                 # Identify nonzero locations in the gradient
                 mask = grad != 0
 
+                # State initialization
                 state = self.state[p]
+
                 exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
 
-                # Increment step in place
                 state["step"].add_(1)
-                step_f = state["step"].float()  # For exponent calculations below
+                step = state["step"]
 
-                # Update moments for masked entries only, all in place
-                exp_avg[mask].mul_(beta1)
-                exp_avg[mask].add_(grad[mask], alpha=1 - beta1)
-
-                exp_avg_sq[mask].mul_(beta2)
-                exp_avg_sq[mask].addcmul_(grad[mask], grad[mask], value=1 - beta2)
+                # Update moments for masked entries only
+                exp_avg[mask] = (
+                    exp_avg[mask].mul_(beta1).add_(grad[mask], alpha=1 - beta1)
+                )
+                exp_avg_sq[mask] = (
+                    exp_avg_sq[mask]
+                    .mul_(beta2)
+                    .addcmul_(grad[mask], grad[mask], value=1 - beta2)
+                )
 
                 # Bias correction
-                bias_correction1 = 1 - beta1**step_f
-                bias_correction2 = 1 - beta2**step_f
+                bias_correction1 = 1 - beta1**step
+                bias_correction2 = 1 - beta2**step
 
                 # Compute step size
-                denom = (exp_avg_sq.sqrt() / torch.sqrt(bias_correction2)) + eps
+                denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
                 step_size = lr / bias_correction1
 
-                # Update parameters at masked locations in place
+                # Update parameters at masked locations
                 if not maximize:
-                    p.data[mask].sub_(step_size * (exp_avg[mask] / denom[mask]))
+                    p.data[mask] -= step_size * (exp_avg[mask] / denom[mask])
                 else:
-                    p.data[mask].add_(step_size * (exp_avg[mask] / denom[mask]))
+                    p.data[mask] += step_size * (exp_avg[mask] / denom[mask])
 
         return loss
 
