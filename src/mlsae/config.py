@@ -8,11 +8,11 @@ import transformer_lens
 @dataclass
 class DataConfig:
     seed: int = 49
-    sae_batch_size_tokens: int = 131072
-    act_block_size_sae_batch_size_mult: int = 64
+    sae_batch_size_tokens: int = 200_000
+    act_block_size_sae_batch_size_mult: int = 50
 
     seq_len: int = 64
-    llm_batch_size_seqs: int = 512
+    llm_batch_size_seqs: int = 800
 
     sae_dtype: str = "fp32"
     cache_dtype: str = "bf16"
@@ -153,6 +153,7 @@ data_cfg = DataConfig()
 assert (
     train_cfg.resample_dead_every_n_batches % train_cfg.measure_dead_over_n_batches == 0
 )
+assert data_cfg.act_block_size_tokens % data_cfg.seq_len == 0
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
