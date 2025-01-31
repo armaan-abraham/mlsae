@@ -54,7 +54,7 @@ class TrainConfig:
                 "weight_decay": 1e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.3,
+                "act_l2_coeff": 0.05,
             },
             {
                 "name": "0-0.1",
@@ -64,7 +64,7 @@ class TrainConfig:
                 "weight_decay": 1e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.6,
+                "act_l2_coeff": 0.3,
             },
 
             # === 1-0 ===
@@ -77,7 +77,7 @@ class TrainConfig:
                 "weight_decay": 1e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.3,
+                "act_l2_coeff": 0.05,
             },
             {
                 "name": "1-0.1",
@@ -87,7 +87,7 @@ class TrainConfig:
                 "weight_decay": 1e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.6,
+                "act_l2_coeff": 0.3,
             },
             # Varying weight decay
             {
@@ -98,7 +98,7 @@ class TrainConfig:
                 "weight_decay": 4e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.3,
+                "act_l2_coeff": 0.05,
             },
 
             # === 1-1 ===
@@ -111,7 +111,7 @@ class TrainConfig:
                 "weight_decay": 1e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.3,
+                "act_l2_coeff": 0.05,
             },
             {
                 "name": "1-1.1",
@@ -121,7 +121,7 @@ class TrainConfig:
                 "weight_decay": 1e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.6,
+                "act_l2_coeff": 0.3,
             },
             # Varying weight decay
             {
@@ -132,7 +132,7 @@ class TrainConfig:
                 "weight_decay": 4e-4,
                 "lr": 1e-4,
                 "topk": 64,
-                "act_l2_coeff": 0.3,
+                "act_l2_coeff": 0.05,
             },
         ]
     )
