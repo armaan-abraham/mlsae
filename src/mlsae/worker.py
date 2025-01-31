@@ -226,8 +226,7 @@ def task_train(
 
         loss, l2_loss, feature_acts, _ = model(acts)
         loss.backward()
-        # This is a but uncommon, but is not a bug.
-        model.make_decoder_weights_and_grad_unit_norm()
+        model.process_gradients()
         optimizer.step()
         optimizer.zero_grad()
 

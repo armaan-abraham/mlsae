@@ -219,6 +219,10 @@ class DeepSAE(nn.Module):
         return mean, std, avg_mse
 
     @torch.no_grad()
+    def process_gradients(self):
+        self.make_decoder_weights_and_grad_unit_norm()
+
+    @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
         w = self.decoder[-1].weight
         w_normed = w / w.norm(dim=-1, keepdim=True)
