@@ -282,7 +282,7 @@ class Trainer:
         ):
             for k, v in metrics_for_batch.items():
                 aggregate_metrics_for_batch[
-                    f"{self.saes[model_idx]['name']}_{k}"
+                    f"{self.saes[model_idx].name}_{k}"
                 ] = v
 
         if should_log:

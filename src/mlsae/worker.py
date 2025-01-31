@@ -166,6 +166,8 @@ def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Ten
     if not model.should_resample_sparse_features(idx):
         return
 
+    logging.info(f"Resampling dead features model {model.name}")
+
     model.resample_sparse_features(idx)
 
     enc_layer = model.sparse_encoder_block[0]  # Linear for the sparse encoder
@@ -257,6 +259,9 @@ def task_train(
             dead_features = act_freq_history == 0
 
             if (n_iter + 1) % train_cfg.resample_dead_every_n_batches == 0:
+                logging.info(
+                    f"Possibly resampling dead features device {device} model {model.name}"
+                )
                 resample_dead_features(optimizer, model, dead_features)
 
             metrics["dead_features"] = dead_features.float().sum().item()
