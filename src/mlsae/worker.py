@@ -171,7 +171,7 @@ def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Ten
     model.resample_sparse_features(idx)
 
     enc_layer = model.sparse_encoder_block[0]  # Linear for the sparse encoder
-    dec_layer = model.decoder[0]  # First Linear in the decoder
+    dec_layer = model.decoder_blocks[0]  # First Linear in the decoder
 
     # We do not reset the step counter, but we reset the momentum
     with torch.no_grad():
@@ -262,7 +262,12 @@ def task_train(
                 logging.info(
                     f"Possibly resampling dead features device {device} model {model.name}"
                 )
-                resample_dead_features(optimizer, model, dead_features)
+                try:
+                    resample_dead_features(optimizer, model, dead_features)
+                except Exception as e:
+                    logging.error(
+                        f"Failed to resample dead features device {device} model {model.name}: {e}"
+                    )
 
             metrics["dead_features"] = dead_features.float().sum().item()
             act_freq_history = torch.zeros(
