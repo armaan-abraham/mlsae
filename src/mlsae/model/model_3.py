@@ -28,10 +28,10 @@ class DeepSAE3(DeepSAE):
 
         x_hat = x - b_d
         feature_acts = nn.ReLU()(
-            einsum(x_hat, W_e, "batch in, out in -> batch out") + b_e
+            einsum(x_hat, W_e, "batch d_in, d_out d_in -> batch d_out") + b_e
         )
         feature_acts = TopKActivation(self.topk)(feature_acts)
-        reconstructed = einsum(feature_acts, W_d, "batch in, out in -> batch out") + b_d
+        reconstructed = einsum(feature_acts, W_d, "batch d_in, d_out d_in -> batch d_out") + b_d
 
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
         l2_loss = (feature_acts**2).mean() * (self.act_l2_coeff / self.topk)
