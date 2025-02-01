@@ -178,8 +178,7 @@ class Trainer:
             # We are waiting on the generation of an act block to train models
             (
                 self.acts_read_queue.empty()
-                and len(self.training_needed_for_model_idx)
-                == len(self.saes)
+                and len(self.training_needed_for_model_idx) == len(self.saes)
             )
             # We have a GPU to spare as other GPUs are busy training models but
             # there are no more models to train for this iteration
@@ -216,9 +215,7 @@ class Trainer:
         # an act block to read from
         if self.act_block_idx_current_training is None:
             self.act_block_idx_current_training = self.acts_read_queue.get(block=False)
-            assert len(self.training_needed_for_model_idx) == len(
-                self.saes
-            )
+            assert len(self.training_needed_for_model_idx) == len(self.saes)
 
         # Take one model that needs to be trained, and it to the task queue
         model_idx = self.training_needed_for_model_idx.pop()
@@ -261,9 +258,7 @@ class Trainer:
             self.pbar.update(1)
             self.train_iter += 1
             # Add models back to train idx
-            self.training_needed_for_model_idx = set(
-                range(len(self.saes))
-            )
+            self.training_needed_for_model_idx = set(range(len(self.saes)))
             self.training_completed_for_model_idx = set()
             self.act_block_idx_current_training = None
             should_log = True
@@ -281,9 +276,7 @@ class Trainer:
             metrics, self.metrics_aggregator
         ):
             for k, v in metrics_for_batch.items():
-                aggregate_metrics_for_batch[
-                    f"{self.saes[model_idx].name}_{k}"
-                ] = v
+                aggregate_metrics_for_batch[f"{self.saes[model_idx].name}_{k}"] = v
 
         if should_log:
             # All train tasks for this act block have been completed, log all

@@ -324,7 +324,7 @@ class DeepSAE(nn.Module):
                 weight_decay=self.weight_decay,
                 lr=self.lr,
             )
-        
+
         else:
             logging.info(f"Cloning {self.__class__.__name__}")
             new_sae = self.__class__(
