@@ -16,7 +16,7 @@ class DeepSAE1(DeepSAEClip):
             encoder_dim_mults=[1],
             sparse_dim_mult=16,
             decoder_dim_mults=[1],
-            name="1-1-act-weight-L2-clip",
+            name="1-1-clip",
             enc_dtype="fp32",
             device=device,
             topk=16,

@@ -13,6 +13,7 @@ from mlsae.model.model_11 import DeepSAE11
 from mlsae.model.model_12 import DeepSAE12
 from mlsae.model.model_13 import DeepSAE13
 from mlsae.model.model_14 import DeepSAE14
+from mlsae.model.model_15 import DeepSAE15
 
 from mlsae.model.model import DeepSAE, TopKActivation, SparseAdam
 
@@ -32,4 +33,5 @@ models = [
     DeepSAE12,
     DeepSAE13,
     DeepSAE14,
+    DeepSAE15,
 ]

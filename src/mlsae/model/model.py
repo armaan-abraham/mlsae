@@ -73,13 +73,6 @@ class DeepSAE(nn.Module):
         self.acts_sq_sum = 0.0
         self.acts_elem_count = 0
 
-        logging.info(f"Encoder dims: {self.encoder_dims}")
-        logging.info(f"Decoder dims: {self.decoder_dims}")
-        logging.info(f"Sparse dim: {self.sparse_dim}")
-        logging.info(f"TopK: {self.topk}")
-        logging.info(f"Device: {self.device}")
-        logging.info(f"Dtype: {self.dtype}")
-
         self._init_params()
 
         self.to(self.device, self.dtype)
@@ -333,6 +326,7 @@ class DeepSAE(nn.Module):
             )
         
         else:
+            logging.info(f"Cloning {self.__class__.__name__}")
             new_sae = self.__class__(
                 act_size=self.act_size,
                 device=self.device,
