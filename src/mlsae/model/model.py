@@ -92,7 +92,7 @@ class DeepSAE(nn.Module):
 
         self.sparse_encoder_block = torch.nn.Sequential(
             self._create_linear_layer(
-                in_dim, self.sparse_dim, apply_weight_decay=False
+                in_dim, self.sparse_dim, apply_weight_decay=True
             ),
             nn.ReLU(),
             TopKActivation(self.topk),
