@@ -38,6 +38,8 @@ class Trainer:
             self.saes.append(sae)
             self.optimizers.append(optimizer)
 
+        wandb.config.update({"models": [sae.get_config_dict() for sae in self.saes]})
+
         # Instantiate shared memory
         logging.info("Instantiating shared memory")
         self.shared_memory = SharedMemory(self.saes, self.optimizers)

@@ -235,7 +235,7 @@ def task_train(
     for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
         acts = act_block[start : start + data_cfg.sae_batch_size_tokens].to(device)
 
-        loss, l2_loss, feature_acts, _ = model(acts)
+        loss, l2, mse_loss, feature_acts, _ = model(acts)
         loss.backward()
         model.process_gradients()
         optimizer.step()
@@ -243,7 +243,7 @@ def task_train(
 
         if start == 0:
             logging.info(
-                f"Start: Device {device}, Model {model_idx}, Loss: {loss.item()}, L2 loss: {l2_loss.item()}, Optimizer step: {optimizer.get_step().item()}"
+                f"Start: Device {device}, Model {model_idx}, Loss: {loss.item()}, Optimizer step: {optimizer.get_step().item()}"
             )
 
         act_freq_batch = (feature_acts > 0).float().mean(dim=0)
@@ -252,7 +252,8 @@ def task_train(
         # store step metrics
         metrics = {
             "loss": loss.item(),
-            "l2_loss": l2_loss.item(),
+            "l2": l2.item(),
+            "mse_loss": mse_loss.item(),
         }
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
@@ -280,7 +281,7 @@ def task_train(
         n_iter += 1
 
     logging.info(
-        f"End: Device {device}, Model {model_idx}, Loss: {loss.item()}, L2 loss: {l2_loss.item()}"
+        f"End: Device {device}, Model {model_idx}, Loss: {loss.item()}"
     )
 
     del acts

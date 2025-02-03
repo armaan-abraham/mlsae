@@ -39,16 +39,7 @@ def save_model(
 
     # 2) Save to local disk
     torch.save(model.state_dict(), save_path / f"{model_id}.pt")
-    config_dict = {
-        "encoder_dims": model.encoder_dims,
-        "decoder_dims": model.decoder_dims,
-        "sparse_dim": model.sparse_dim,
-        "act_size": model.act_size,
-        "enc_dtype": model.enc_dtype,
-        "topk": model.topk,
-        "act_l2_coeff": model.act_l2_coeff,
-        "name": model.name,
-    }
+    config_dict = model.get_config_dict()
     with open(save_path / f"{model_id}_cfg.json", "w") as f:
         json.dump(config_dict, f)
 

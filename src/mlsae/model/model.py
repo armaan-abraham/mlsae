@@ -187,14 +187,15 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        l2_loss = (feature_acts**2).mean() * (self.act_l2_coeff / self.topk)
+        l2 = (feature_acts**2).mean() / self.topk
+        l2_loss = l2 * self.act_l2_coeff
 
         loss = mse_loss + l2_loss
 
-        return loss, l2_loss, mse_loss, feature_acts, reconstructed
+        return loss, l2, mse_loss, feature_acts, reconstructed
 
     def forward(self, x):
-        loss, l2_loss, mse_loss, feature_acts, reconstructed = self._forward(x)
+        loss, l2, mse_loss, feature_acts, reconstructed = self._forward(x)
 
         # Optionally track activation stats and MSE
         if self.track_acts_stats:
@@ -206,7 +207,7 @@ class DeepSAE(nn.Module):
             self.mse_sum += mse_loss.item()
             self.mse_count += 1
 
-        return loss, l2_loss, feature_acts, reconstructed
+        return loss, l2, mse_loss, feature_acts, reconstructed
 
     def get_activation_stats(self):
         """
@@ -252,6 +253,20 @@ class DeepSAE(nn.Module):
             model_id=model_id,
             save_to_s3=save_to_s3,
         )
+    
+    def get_config_dict(self):
+        return {
+            "encoder_dims": self.encoder_dims,
+            "decoder_dims": self.decoder_dims,
+            "sparse_dim": self.sparse_dim,
+            "act_size": self.act_size,
+            "enc_dtype": self.enc_dtype,
+            "topk": self.topk,
+            "act_l2_coeff": self.act_l2_coeff,
+            "name": self.name,
+            "weight_decay": self.weight_decay,
+            "lr": self.lr,
+        }
 
     @classmethod
     def load(cls, architecture_name, model_id=None, load_from_s3=False):

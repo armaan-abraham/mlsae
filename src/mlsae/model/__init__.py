@@ -1,17 +1,17 @@
+import re
+import importlib
+import pkgutil
+from pathlib import Path
+
+# Import base classes that should always be available
 from mlsae.model.model import DeepSAE, SparseAdam, TopKActivation
-from mlsae.model.model_0 import DeepSAE0
-from mlsae.model.model_1 import DeepSAE1
-from mlsae.model.model_2 import DeepSAE2
-from mlsae.model.model_3 import DeepSAE3
-from mlsae.model.model_4 import DeepSAE4
-from mlsae.model.model_5 import DeepSAE5
 
-models = [
-    DeepSAE0,
-    DeepSAE1,
-    DeepSAE2,
-    DeepSAE3,
-    DeepSAE4,
-    DeepSAE5,
-]
-
+# Dynamically import all model classes
+models = []
+package_dir = Path(__file__).parent
+for module_info in pkgutil.iter_modules([str(package_dir)]):
+    if re.match(r'model_\d+$', module_info.name):
+        module = importlib.import_module(f'mlsae.model.{module_info.name}')
+        class_name = f'DeepSAE{len(models)}'
+        if hasattr(module, class_name):
+            models.append(getattr(module, class_name))
