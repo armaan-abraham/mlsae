@@ -255,7 +255,7 @@ def task_train(
             "l2": l2.item(),
             "mse_loss": mse_loss.item(),
             "weight_decay_penalty": model.get_weight_decay_penalty(),
-            "act_decay": model.get_act_decay(n_iter).item(),
+            "act_decay": model.get_act_decay(n_iter),
         }
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:

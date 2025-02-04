@@ -1,4 +1,5 @@
 import logging
+import os
 from queue import Queue
 
 import torch.multiprocessing as mp
@@ -15,7 +16,6 @@ from mlsae.config import DEVICE_COUNT, data_cfg, train_cfg
 from mlsae.model import models
 from mlsae.shared_memory import SharedMemory
 from mlsae.worker import TaskType, cpu_worker, gpu_worker, init_optimizer
-
 
 class Trainer:
     def train(self):
@@ -335,4 +335,9 @@ class Trainer:
 
 
 if __name__ == "__main__":
+    assert "HF_TOKEN" in os.environ, "HF_TOKEN must be set"
+    assert "WANDB_API_KEY" in os.environ, "WANDB_API_KEY must be set"
+    if train_cfg.save_to_s3:
+        assert "AWS_ACCESS_KEY_ID" in os.environ, "AWS_ACCESS_KEY_ID must be set"
+        assert "AWS_SECRET_ACCESS_KEY" in os.environ, "AWS_SECRET_ACCESS_KEY must be set"
     Trainer().train()
