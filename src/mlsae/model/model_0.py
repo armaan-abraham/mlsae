@@ -14,7 +14,7 @@ class DeepSAE0(DeepSAE):
             topk=16,
             act_decay_start=4,
             act_decay_end=1e-3,
-            act_decay_tau=1000,
+            act_decay_tau=3000,
             weight_decay=2e-4,
             lr=1e-4,
         )
