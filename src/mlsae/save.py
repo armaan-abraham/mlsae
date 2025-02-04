@@ -159,7 +159,9 @@ def load_model(
         act_size=config_dict["act_size"],
         enc_dtype=config_dict["enc_dtype"],
         topk=config_dict["topk"],
-        act_l2_coeff=config_dict["act_l2_coeff"],
+        act_decay_start=config_dict["act_decay_start"],
+        act_decay_end=config_dict["act_decay_end"],
+        act_decay_tau=config_dict["act_decay_tau"],
         name=config_dict["name"],
     )
 

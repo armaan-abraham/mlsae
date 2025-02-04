@@ -46,9 +46,11 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cpu",
         topk: int = 16,
-        act_l2_coeff: float = 0.0,
         weight_decay: float = 1e-4,
         lr: float = 1e-4,
+        act_decay_start: float = 4,
+        act_decay_end: float = 1e-3,
+        act_decay_tau: float = 500,
     ):
         super().__init__()
 
@@ -63,7 +65,9 @@ class DeepSAE(nn.Module):
         self.device = str(device)
         self.topk = topk
         assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
-        self.act_l2_coeff = act_l2_coeff
+        self.act_decay_start = act_decay_start
+        self.act_decay_end = act_decay_end
+        self.act_decay_tau = act_decay_tau
         self.weight_decay = weight_decay
         self.lr = lr
 
@@ -168,7 +172,14 @@ class DeepSAE(nn.Module):
             {"params": self.params_no_decay, "weight_decay": 0.0, "lr": self.lr},
         ]
 
-    def _forward(self, x):
+    def get_act_decay(self, step: int | None = None):
+        if step is None:
+            return self.act_decay_end
+        return self.act_decay_end + (
+            self.act_decay_start - self.act_decay_end
+        ) * math.exp(-step / self.act_decay_tau)
+
+    def _forward(self, x, act_decay: float):
         # Encode
         if self.encoder_dims:
             resid = x
@@ -188,14 +199,15 @@ class DeepSAE(nn.Module):
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
         l2 = (feature_acts**2).mean() / self.topk
-        l2_loss = l2 * self.act_l2_coeff
+        l2_loss = l2 * act_decay
 
         loss = mse_loss + l2_loss
 
         return loss, l2, mse_loss, feature_acts, reconstructed
 
-    def forward(self, x):
-        loss, l2, mse_loss, feature_acts, reconstructed = self._forward(x)
+    def forward(self, x, step: int | None = None):
+        act_decay = self.get_act_decay(step)
+        loss, l2, mse_loss, feature_acts, reconstructed = self._forward(x, act_decay)
 
         # Optionally track activation stats and MSE
         if self.track_acts_stats:
@@ -253,7 +265,7 @@ class DeepSAE(nn.Module):
             model_id=model_id,
             save_to_s3=save_to_s3,
         )
-    
+
     def get_config_dict(self):
         return {
             "encoder_dims": self.encoder_dims,
@@ -262,7 +274,9 @@ class DeepSAE(nn.Module):
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
             "topk": self.topk,
-            "act_l2_coeff": self.act_l2_coeff,
+            "act_decay_start": self.act_decay_start,
+            "act_decay_end": self.act_decay_end,
+            "act_decay_tau": self.act_decay_tau,
             "name": self.name,
             "weight_decay": self.weight_decay,
             "lr": self.lr,
@@ -335,7 +349,9 @@ class DeepSAE(nn.Module):
                 enc_dtype=self.enc_dtype,
                 device=self.device,
                 topk=self.topk,
-                act_l2_coeff=self.act_l2_coeff,
+                act_decay_start=self.act_decay_start,
+                act_decay_end=self.act_decay_end,
+                act_decay_tau=self.act_decay_tau,
                 weight_decay=self.weight_decay,
                 lr=self.lr,
             )

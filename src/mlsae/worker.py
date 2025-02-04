@@ -235,7 +235,7 @@ def task_train(
     for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
         acts = act_block[start : start + data_cfg.sae_batch_size_tokens].to(device)
 
-        loss, l2, mse_loss, feature_acts, _ = model(acts)
+        loss, l2, mse_loss, feature_acts, _ = model(acts, step=n_iter)
         loss.backward()
         model.process_gradients()
         optimizer.step()
@@ -255,6 +255,7 @@ def task_train(
             "l2": l2.item(),
             "mse_loss": mse_loss.item(),
             "weight_decay_penalty": model.get_weight_decay_penalty(),
+            "act_decay": model.get_act_decay(n_iter).item(),
         }
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
@@ -281,9 +282,7 @@ def task_train(
         metrics_list.append(metrics)
         n_iter += 1
 
-    logging.info(
-        f"End: Device {device}, Model {model_idx}, Loss: {loss.item()}"
-    )
+    logging.info(f"End: Device {device}, Model {model_idx}, Loss: {loss.item()}")
 
     del acts
 
