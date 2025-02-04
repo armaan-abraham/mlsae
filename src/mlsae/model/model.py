@@ -92,7 +92,7 @@ class DeepSAE(nn.Module):
 
         self.sparse_encoder_block = torch.nn.Sequential(
             self._create_linear_layer(
-                in_dim, self.sparse_dim, apply_weight_decay=True
+                in_dim, self.sparse_dim, apply_weight_decay=False
             ),
             nn.ReLU(),
             TopKActivation(self.topk),
@@ -351,6 +351,17 @@ class DeepSAE(nn.Module):
         new_sae.copy_tensors_(self)
 
         return new_sae
+
+    def get_weight_decay_penalty(self):
+        """
+        Computes the L2 weight decay penalty term for parameters with weight decay.
+        Returns:
+            float: The L2 penalty term (weight_decay * sum of squared weights)
+        """
+        l2_penalty = 0.0
+        for param in self.params_with_decay:
+            l2_penalty += torch.sum(param.pow(2))
+        return self.weight_decay * l2_penalty.item()
 
 
 class SparseAdam(torch.optim.Optimizer):

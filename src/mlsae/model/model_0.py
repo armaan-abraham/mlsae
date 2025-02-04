@@ -8,11 +8,11 @@ class DeepSAE0(DeepSAE):
             encoder_dim_mults=[1],
             sparse_dim_mult=16,
             decoder_dim_mults=[1],
-            name="1-1-wd",
+            name="1-1-wd-ad-2",
             enc_dtype="fp32",
             device=device,
             topk=16,
-            act_l2_coeff=0.0,
+            act_l2_coeff=1e-2,
             weight_decay=1e-3,
             lr=1e-4,
         )
