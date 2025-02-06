@@ -377,8 +377,8 @@ class DeepSAE(nn.Module):
         """
         l2_penalty = 0.0
         for param in self.params_with_decay:
-            l2_penalty += torch.sum(param.pow(2))
-        return self.weight_decay * l2_penalty.item()
+            l2_penalty += torch.sum(param.pow(2)).item()
+        return self.weight_decay * l2_penalty
 
 
 class SparseAdam(torch.optim.Optimizer):
