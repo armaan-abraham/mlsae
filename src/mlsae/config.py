@@ -25,8 +25,8 @@ class DataConfig:
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
 
-    n_token_blocks: int = 5
-    n_act_blocks: int = 1
+    n_token_blocks: int = 4
+    n_act_blocks: int = 2
 
     @property
     def act_block_size_tokens(self) -> int:
@@ -43,7 +43,7 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    num_tokens: int = int(3e9)
+    num_tokens: int = int(4e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = True

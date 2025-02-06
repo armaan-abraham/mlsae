@@ -77,7 +77,7 @@ def gpu_worker(
             elif task_type == TaskType.TRAIN:
                 task_train(results, device, task_data, shared_memory)
             else:
-                raise ValueError(f"Unknown task type: {task}")
+                raise ValueError(f"Unknown task type: {task_type}")
     except Exception as e:
         results.put(e)
         raise
@@ -250,12 +250,15 @@ def task_train(
         act_freq_history += act_freq_batch
 
         # store step metrics
+        baseline_mse = get_baseline_mse(acts)
         metrics = {
             "loss": loss.item(),
             "l2": l2.item(),
-            "mse_loss": mse_loss.item(),
+            "mse": mse_loss.item(),
             "weight_decay_penalty": model.get_weight_decay_penalty(),
             "act_decay": model.get_act_decay(n_iter),
+            "baseline_mse": baseline_mse.item(),
+            "normalized_mse": (mse_loss / baseline_mse).item(),
         }
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
@@ -308,3 +311,9 @@ def task_train(
         "model_idx": model_idx,
     }
     results.put((TaskType.TRAIN, result_data))
+
+def get_baseline_mse(acts: torch.Tensor):
+    """
+    Get the baseline MSE loss for the given activations.
+    """
+    return (acts - acts.mean(dim=0)).pow(2).mean()
