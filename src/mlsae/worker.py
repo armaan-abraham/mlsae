@@ -234,6 +234,10 @@ def task_train(
     # and we set the act block size as a multiple of the SAE batch size
     for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
         acts = act_block[start : start + data_cfg.sae_batch_size_tokens].to(device)
+        
+        # Normalize activations to zero mean and unit norm
+        acts -= acts.mean(dim=1, keepdim=True)
+        acts /= acts.norm(dim=1, keepdim=True)
 
         loss, l2, mse_loss, feature_acts, _ = model(acts, step=n_iter)
         loss.backward()

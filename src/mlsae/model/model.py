@@ -48,8 +48,8 @@ class DeepSAE(nn.Module):
         topk: int = 16,
         weight_decay: float = 2e-4,
         lr: float = 1e-4,
-        act_decay_start: float = 4,
-        act_decay_end: float = 1e-3,
+        act_decay_start: float = 4e-4,
+        act_decay_end: float = 4e-7,
         act_decay_tau: float = 3000,
     ):
         super().__init__()
@@ -243,7 +243,7 @@ class DeepSAE(nn.Module):
     @torch.no_grad()
     def process_gradients(self):
         self.make_decoder_weights_and_grad_unit_norm()
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=2.0)
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
