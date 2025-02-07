@@ -150,7 +150,7 @@ def tokenize_and_concatenate(
 
 
 def stream_training_chunks(eval: bool = False):
-    CLIENT_TIMEOUT_SECONDS = 60 * 60
+    CLIENT_TIMEOUT_SECONDS = 60 * 60 * 2
     storage_options = {
         "client_kwargs": {
             "timeout": aiohttp.ClientTimeout(total=CLIENT_TIMEOUT_SECONDS),
