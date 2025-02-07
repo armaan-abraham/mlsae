@@ -29,6 +29,7 @@ class Trainer:
         logging.info("Instantiating models and optimizers")
         self.saes = []
         self.optimizers = []
+        assert models
         for model in models:
             sae = model(
                 act_size=data_cfg.act_size,
