@@ -239,7 +239,7 @@ def task_train(
         acts -= acts.mean(dim=1, keepdim=True)
         acts /= acts.norm(dim=1, keepdim=True)
 
-        loss, l2, mse_loss, feature_acts, _ = model(acts, step=n_iter)
+        loss, act_mag, mse_loss, feature_acts, _ = model(acts)
         loss.backward()
         model.process_gradients()
         optimizer.step()
@@ -257,10 +257,9 @@ def task_train(
         baseline_mse = get_baseline_mse(acts)
         metrics = {
             "loss": loss.item(),
-            "l2": l2.item(),
+            "act_mag": act_mag.item(),
             "mse": mse_loss.item(),
             "weight_decay_penalty": model.get_weight_decay_penalty(),
-            "act_decay": model.get_act_decay(n_iter),
             "baseline_mse": baseline_mse.item(),
             "normalized_mse": (mse_loss / baseline_mse).item(),
         }

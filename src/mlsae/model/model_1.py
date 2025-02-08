@@ -12,9 +12,7 @@ class DeepSAE1(DeepSAE):
             enc_dtype="fp32",
             device=device,
             topk=16,
-            act_decay_start=1e1,
-            act_decay_end=1e-9,
-            act_decay_tau=1e9,
-            weight_decay=2e-4,
+            act_decay=1e1,
+            weight_decay=1e-4,
             lr=2e-4,
         )
