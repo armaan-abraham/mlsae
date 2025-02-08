@@ -25,9 +25,8 @@ class InflateSAE(DeepSAE):
 
         # Regularization
         deflate_act_mag = torch.abs(feature_acts).mean()
-        deflate_loss = deflate_act_mag * self.act_decay
-        botk_vals = torch.topk(feature_acts_full, self.sparse_dim - self.topk, dim=1, largest=False)[0]
-        inflate_act_mag = torch.abs(botk_vals).mean()
+        deflate_loss = deflate_act_mag * self.act_decay * 1.5
+        inflate_act_mag = torch.abs(feature_acts_full).mean()
         inflate_loss = -inflate_act_mag * self.act_decay
         act_mag_loss = deflate_loss + inflate_loss
 
