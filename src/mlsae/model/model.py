@@ -104,14 +104,14 @@ class DeepSAE(nn.Module):
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
-                in_dim, dim, apply_weight_decay=False
+                in_dim, dim, apply_weight_decay=False, normalize=True
             )
             self.decoder_blocks.append(linear_layer)
             self.decoder_blocks.append(nn.ReLU())
             in_dim = dim
 
         self.decoder_blocks.append(
-            self._create_linear_layer(in_dim, self.act_size, apply_weight_decay=False)
+            self._create_linear_layer(in_dim, self.act_size, apply_weight_decay=False, normalize=True)
         )
 
     def _init_params(self):
@@ -133,14 +133,17 @@ class DeepSAE(nn.Module):
         self.mse_sum = 0.0
         self.mse_count = 0
 
-    def _create_linear_layer(self, in_dim, out_dim, apply_weight_decay: bool):
+    def _create_linear_layer(self, in_dim, out_dim, apply_weight_decay: bool, normalize=False):
         """
         Creates a Linear(in_dim, out_dim) and assigns the weight to
         params_with_decay or params_no_decay accordingly. The bias
         is always placed in params_no_decay (commonly done in PyTorch).
         """
+        assert not (apply_weight_decay and normalize)
         layer = nn.Linear(in_dim, out_dim)
         nn.init.kaiming_normal_(layer.weight)
+        if normalize:
+            layer.weight.data = layer.weight.data / layer.weight.data.norm(dim=-1, keepdim=True)
         nn.init.zeros_(layer.bias)
 
         if apply_weight_decay:
