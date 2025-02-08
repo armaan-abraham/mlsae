@@ -108,7 +108,7 @@ class DeepSAE(nn.Module):
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
-                in_dim, dim, apply_weight_decay=True
+                in_dim, dim, apply_weight_decay=False
             )
             self.decoder_blocks.append(linear_layer)
             self.decoder_blocks.append(nn.ReLU())
@@ -245,14 +245,18 @@ class DeepSAE(nn.Module):
         self.make_decoder_weights_and_grad_unit_norm()
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
+    def _make_decoder_weights_and_grad_unit_norm(self, weight):
+        w_normed = weight / weight.norm(dim=-1, keepdim=True)
+        if weight.grad is not None:
+            w_dec_grad_proj = (weight.grad * w_normed).sum(-1, keepdim=True) * w_normed
+            weight.grad -= w_dec_grad_proj
+        weight.data = w_normed
+
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        w = self.decoder_blocks[-1].weight
-        w_normed = w / w.norm(dim=-1, keepdim=True)
-        if w.grad is not None:
-            w_dec_grad_proj = (w.grad * w_normed).sum(-1, keepdim=True) * w_normed
-            w.grad -= w_dec_grad_proj
-        w.data = w_normed
+        for block in self.decoder_blocks:
+            if isinstance(block, nn.Linear):
+                self._make_decoder_weights_and_grad_unit_norm(block.weight)
 
     def save(self, architecture_name, model_id=None, save_to_s3=False):
         """
