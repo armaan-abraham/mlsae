@@ -1,7 +1,7 @@
-from mlsae.model.model import DeepSAE
+from mlsae.model.model_3 import L2ActDecaySAE
 
 
-class DeepSAE6(DeepSAE):
+class DeepSAE6(L2ActDecaySAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,

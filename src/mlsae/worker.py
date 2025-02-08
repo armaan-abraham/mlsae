@@ -266,6 +266,7 @@ def task_train(
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
             dead_features = act_freq_history == 0
+            assert dead_features.shape == (model.sparse_dim,), f"Expected {model.sparse_dim} dead features, got {dead_features.shape}"
 
             if (n_iter + 1) % train_cfg.resample_dead_every_n_batches == 0:
                 logging.info(

@@ -95,7 +95,6 @@ class DeepSAE(nn.Module):
                 in_dim, self.sparse_dim, apply_weight_decay=False
             ),
             nn.ReLU(),
-            TopKActivation(self.topk),
         )
 
     def _init_decoder_params(self):
@@ -181,7 +180,8 @@ class DeepSAE(nn.Module):
         else:
             resid = x
 
-        resid = feature_acts = self.sparse_encoder_block(resid)
+        resid = feature_acts_full = self.sparse_encoder_block(resid)
+        feature_acts = TopKActivation(self.topk)(feature_acts_full)
 
         for block in self.decoder_blocks:
             resid = block(resid)
