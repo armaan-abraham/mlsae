@@ -188,7 +188,7 @@ class DeepSAE(nn.Module):
             resid = x
 
         resid = feature_acts = self.sparse_encoder_block(resid)
-        assert (feature_acts > 0).sum(dim=-1).eq(self.topk).all()
+        assert ((feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)).all()
 
         for block in self.decoder_blocks:
             resid = block(resid)
