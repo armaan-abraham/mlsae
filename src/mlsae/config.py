@@ -19,8 +19,8 @@ class DataConfig:
     model_name: str = "pythia-31m"
     tokenizer_name: str = "pythia-31m"
     site: str = "resid_pre"
-    layer: int = 9
-    act_size: int = 768
+    layer: int = 5
+    act_size: int = 256
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
