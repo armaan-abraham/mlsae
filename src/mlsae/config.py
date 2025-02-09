@@ -16,8 +16,8 @@ class DataConfig:
 
     sae_dtype: str = "fp32"
     cache_dtype: str = "bf16"
-    model_name: str = "gpt2-small"
-    tokenizer_name: str = "gpt2"
+    model_name: str = "pythia-31m"
+    tokenizer_name: str = "pythia-31m"
     site: str = "resid_pre"
     layer: int = 9
     act_size: int = 768
