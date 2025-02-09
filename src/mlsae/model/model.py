@@ -46,7 +46,6 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cpu",
         topk: int = 16,
-        weight_decay: float = 2e-4,
         act_decay: float = 1e-2,
         lr: float = 1e-4,
     ):
@@ -64,7 +63,6 @@ class DeepSAE(nn.Module):
         self.topk = topk
         assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
         self.act_decay = act_decay
-        self.weight_decay = weight_decay
         self.lr = lr
 
         self.track_acts_stats = False
@@ -83,7 +81,7 @@ class DeepSAE(nn.Module):
 
         for dim in self.encoder_dims:
             linear_layer = self._create_linear_layer(
-                in_dim, dim, apply_weight_decay=True
+                in_dim, dim
             )
             self.dense_encoder_blocks.append(
                 torch.nn.Sequential(linear_layer, nn.Tanh(), nn.LayerNorm(dim))
@@ -92,7 +90,7 @@ class DeepSAE(nn.Module):
 
         self.sparse_encoder_block = torch.nn.Sequential(
             self._create_linear_layer(
-                in_dim, self.sparse_dim, apply_weight_decay=False
+                in_dim, self.sparse_dim
             ),
             nn.ReLU(),
             TopKActivation(self.topk),
@@ -104,7 +102,7 @@ class DeepSAE(nn.Module):
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(
-                in_dim, dim, apply_weight_decay=False, normalize=True
+                in_dim, dim, normalize=True
             )
             self.decoder_blocks.append(linear_layer)
             self.decoder_blocks.append(nn.ReLU())
@@ -112,14 +110,11 @@ class DeepSAE(nn.Module):
 
         self.decoder_blocks.append(
             self._create_linear_layer(
-                in_dim, self.act_size, apply_weight_decay=False, normalize=True
+                in_dim, self.act_size, normalize=True
             )
         )
 
     def _init_params(self):
-        self.params_with_decay = []
-        self.params_no_decay = []
-
         self._init_encoder_params()
         self._init_decoder_params()
 
@@ -136,14 +131,8 @@ class DeepSAE(nn.Module):
         self.mse_count = 0
 
     def _create_linear_layer(
-        self, in_dim, out_dim, apply_weight_decay: bool, normalize=False
+        self, in_dim, out_dim, normalize=False
     ):
-        """
-        Creates a Linear(in_dim, out_dim) and assigns the weight to
-        params_with_decay or params_no_decay accordingly. The bias
-        is always placed in params_no_decay (commonly done in PyTorch).
-        """
-        assert not (apply_weight_decay and normalize)
         layer = nn.Linear(in_dim, out_dim)
         nn.init.kaiming_normal_(layer.weight)
         if normalize:
@@ -151,30 +140,14 @@ class DeepSAE(nn.Module):
                 dim=-1, keepdim=True
             )
         nn.init.zeros_(layer.bias)
-
-        if apply_weight_decay:
-            self.params_with_decay.append(layer.weight)
-        else:
-            self.params_no_decay.append(layer.weight)
-
-        if layer.bias is not None:
-            self.params_no_decay.append(layer.bias)
-
         return layer
 
     def get_param_groups(self):
-        """
-        Return parameter groups for the optimizer:
-          - One group with weight_decay
-          - One group without weight_decay
-        """
         return [
             {
-                "params": self.params_with_decay,
-                "weight_decay": self.weight_decay,
+                "params": self.parameters(),
                 "lr": self.lr,
             },
-            {"params": self.params_no_decay, "weight_decay": 0.0, "lr": self.lr},
         ]
 
     def _forward(self, x):
@@ -279,7 +252,6 @@ class DeepSAE(nn.Module):
             "topk": self.topk,
             "act_decay": self.act_decay,
             "name": self.name,
-            "weight_decay": self.weight_decay,
             "lr": self.lr,
         }
 
@@ -351,7 +323,6 @@ class DeepSAE(nn.Module):
                 device=self.device,
                 topk=self.topk,
                 act_decay=self.act_decay,
-                weight_decay=self.weight_decay,
                 lr=self.lr,
             )
 
@@ -366,17 +337,6 @@ class DeepSAE(nn.Module):
         new_sae.copy_tensors_(self)
 
         return new_sae
-
-    def get_weight_decay_penalty(self):
-        """
-        Computes the L2 weight decay penalty term for parameters with weight decay.
-        Returns:
-            float: The L2 penalty term (weight_decay * sum of squared weights)
-        """
-        l2_penalty = 0.0
-        for param in self.params_with_decay:
-            l2_penalty += torch.sum(param.pow(2)).item()
-        return self.weight_decay * l2_penalty
 
 
 class SparseAdam(torch.optim.Optimizer):

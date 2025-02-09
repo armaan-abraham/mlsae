@@ -259,7 +259,6 @@ def task_train(
             "loss": loss.item(),
             "act_mag": act_mag.item(),
             "mse": mse_loss.item(),
-            "weight_decay_penalty": model.get_weight_decay_penalty(),
             "baseline_mse": baseline_mse.item(),
             "normalized_mse": (mse_loss / baseline_mse).item(),
         }

@@ -6,13 +6,12 @@ class DeepSAE0(DeepSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[1],
-            sparse_dim_mult=16,
+            sparse_dim_mult=8,
             decoder_dim_mults=[1],
             name="1-1-0",
             enc_dtype="fp32",
             device=device,
-            topk=16,
-            act_decay=1e-1,
-            weight_decay=1e-4,
+            topk=4,
+            act_decay=0,
             lr=2e-4,
         )
