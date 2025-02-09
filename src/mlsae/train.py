@@ -17,6 +17,7 @@ from mlsae.model import models
 from mlsae.shared_memory import SharedMemory
 from mlsae.worker import TaskType, cpu_worker, gpu_worker, init_optimizer
 
+
 class Trainer:
     def train(self):
         wandb.init(project=train_cfg.wandb_project, entity=train_cfg.wandb_entity)
@@ -340,5 +341,7 @@ if __name__ == "__main__":
     assert "WANDB_API_KEY" in os.environ, "WANDB_API_KEY must be set"
     if train_cfg.save_to_s3:
         assert "AWS_ACCESS_KEY_ID" in os.environ, "AWS_ACCESS_KEY_ID must be set"
-        assert "AWS_SECRET_ACCESS_KEY" in os.environ, "AWS_SECRET_ACCESS_KEY must be set"
+        assert (
+            "AWS_SECRET_ACCESS_KEY" in os.environ
+        ), "AWS_SECRET_ACCESS_KEY must be set"
     Trainer().train()

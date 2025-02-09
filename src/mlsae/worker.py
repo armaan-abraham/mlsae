@@ -234,7 +234,7 @@ def task_train(
     # and we set the act block size as a multiple of the SAE batch size
     for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
         acts = act_block[start : start + data_cfg.sae_batch_size_tokens].to(device)
-        
+
         # Normalize activations to zero mean and unit norm
         acts -= acts.mean(dim=1, keepdim=True)
         acts /= acts.norm(dim=1, keepdim=True)
@@ -266,7 +266,9 @@ def task_train(
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
             dead_features = act_freq_history == 0
-            assert dead_features.shape == (model.sparse_dim,), f"Expected {model.sparse_dim} dead features, got {dead_features.shape}"
+            assert dead_features.shape == (
+                model.sparse_dim,
+            ), f"Expected {model.sparse_dim} dead features, got {dead_features.shape}"
 
             if (n_iter + 1) % train_cfg.resample_dead_every_n_batches == 0:
                 logging.info(
@@ -315,6 +317,7 @@ def task_train(
         "model_idx": model_idx,
     }
     results.put((TaskType.TRAIN, result_data))
+
 
 def get_baseline_mse(acts: torch.Tensor):
     """

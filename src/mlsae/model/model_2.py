@@ -1,7 +1,7 @@
-from mlsae.model.model_0 import InflateSAE
+from mlsae.model.model import DeepSAE
 
 
-class DeepSAE2(InflateSAE):
+class DeepSAE2(DeepSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -12,7 +12,7 @@ class DeepSAE2(InflateSAE):
             enc_dtype="fp32",
             device=device,
             topk=16,
-            act_decay=1e-8,
+            act_decay=2e-2,
             weight_decay=1e-4,
             lr=2e-4,
         )

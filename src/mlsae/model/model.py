@@ -95,6 +95,7 @@ class DeepSAE(nn.Module):
                 in_dim, self.sparse_dim, apply_weight_decay=False
             ),
             nn.ReLU(),
+            TopKActivation(self.topk),
         )
 
     def _init_decoder_params(self):
@@ -110,7 +111,9 @@ class DeepSAE(nn.Module):
             in_dim = dim
 
         self.decoder_blocks.append(
-            self._create_linear_layer(in_dim, self.act_size, apply_weight_decay=False, normalize=True)
+            self._create_linear_layer(
+                in_dim, self.act_size, apply_weight_decay=False, normalize=True
+            )
         )
 
     def _init_params(self):
@@ -132,7 +135,9 @@ class DeepSAE(nn.Module):
         self.mse_sum = 0.0
         self.mse_count = 0
 
-    def _create_linear_layer(self, in_dim, out_dim, apply_weight_decay: bool, normalize=False):
+    def _create_linear_layer(
+        self, in_dim, out_dim, apply_weight_decay: bool, normalize=False
+    ):
         """
         Creates a Linear(in_dim, out_dim) and assigns the weight to
         params_with_decay or params_no_decay accordingly. The bias
@@ -142,7 +147,9 @@ class DeepSAE(nn.Module):
         layer = nn.Linear(in_dim, out_dim)
         nn.init.kaiming_normal_(layer.weight)
         if normalize:
-            layer.weight.data = layer.weight.data / layer.weight.data.norm(dim=-1, keepdim=True)
+            layer.weight.data = layer.weight.data / layer.weight.data.norm(
+                dim=-1, keepdim=True
+            )
         nn.init.zeros_(layer.bias)
 
         if apply_weight_decay:
@@ -180,8 +187,8 @@ class DeepSAE(nn.Module):
         else:
             resid = x
 
-        resid = feature_acts_full = self.sparse_encoder_block(resid)
-        feature_acts = TopKActivation(self.topk)(feature_acts_full)
+        resid = feature_acts = self.sparse_encoder_block(resid)
+        assert (feature_acts > 0).sum(dim=-1).eq(self.topk).all()
 
         for block in self.decoder_blocks:
             resid = block(resid)
@@ -190,7 +197,7 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        act_mag = torch.abs(feature_acts).mean() / self.topk
+        act_mag = feature_acts.pow(2).mean()
         act_mag_loss = act_mag * self.act_decay
 
         loss = mse_loss + act_mag_loss
