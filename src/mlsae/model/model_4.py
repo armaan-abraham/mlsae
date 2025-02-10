@@ -1,6 +1,7 @@
-from mlsae.model.model_3 import ReLUEncoderSAE
+from mlsae.model.model import DeepSAE
 
-class DeepSAE4(ReLUEncoderSAE):
+
+class DeepSAE4(DeepSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -11,7 +12,6 @@ class DeepSAE4(ReLUEncoderSAE):
             enc_dtype="fp32",
             device=device,
             topk=4,
-            act_decay=1e-5,
+            act_decay=0,
             lr=2e-4,
         )
-    

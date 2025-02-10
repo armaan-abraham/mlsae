@@ -84,9 +84,11 @@ class DeepSAE(nn.Module):
                 in_dim, dim
             )
             self.dense_encoder_blocks.append(
-                torch.nn.Sequential(linear_layer, nn.Tanh(), nn.LayerNorm(dim))
+                torch.nn.Sequential(linear_layer, nn.ReLU())
             )
             in_dim = dim
+        
+        self.sparse_scalar = nn.Parameter(torch.ones(1))
 
         self.sparse_encoder_block = torch.nn.Sequential(
             self._create_linear_layer(
@@ -156,17 +158,20 @@ class DeepSAE(nn.Module):
             resid = x
             for block in self.dense_encoder_blocks:
                 resid = block(resid)
-            resid += x
         else:
             resid = x
+        
+        resid_scaled = resid * self.sparse_scalar
 
-        resid = feature_acts = self.sparse_encoder_block(resid)
+        resid = feature_acts = self.sparse_encoder_block(resid_scaled)
         assert ((feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)).all()
 
         for block in self.decoder_blocks:
             resid = block(resid)
+        
+        resid_scaled = resid / self.sparse_scalar
 
-        reconstructed = resid
+        reconstructed = resid_scaled
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()

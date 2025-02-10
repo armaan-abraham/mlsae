@@ -8,8 +8,8 @@ import transformer_lens
 @dataclass
 class DataConfig:
     seed: int = 49
-    sae_batch_size_tokens: int = 500_000
-    act_block_size_sae_batch_size_mult: int = 50
+    sae_batch_size_tokens: int = 200_000
+    act_block_size_sae_batch_size_mult: int = 100
 
     seq_len: int = 64
     llm_batch_size_seqs: int = 2000
@@ -19,7 +19,7 @@ class DataConfig:
     model_name: str = "pythia-31m"
     tokenizer_name: str = "EleutherAI/pythia-31m"
     site: str = "resid_pre"
-    layer: int = 3
+    layer: int = 2
     act_size: int = 256
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"

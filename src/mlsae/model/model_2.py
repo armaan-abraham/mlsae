@@ -1,9 +1,7 @@
-from mlsae.model.model_1 import ScalarSAE
-import torch
-import torch.nn as nn
+from mlsae.model.model import DeepSAE
 
-    
-class DeepSAE2(ScalarSAE):
+
+class DeepSAE2(DeepSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -14,7 +12,6 @@ class DeepSAE2(ScalarSAE):
             enc_dtype="fp32",
             device=device,
             topk=4,
-            act_decay=1e-5,
+            act_decay=1e-3,
             lr=2e-4,
         )
-    
