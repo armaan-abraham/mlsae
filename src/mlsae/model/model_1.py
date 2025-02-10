@@ -35,17 +35,17 @@ class ScalarSAE(DeepSAE):
         else:
             resid = x
         
-        resid *= self.sparse_scalar
+        resid_scaled = resid * self.sparse_scalar
 
-        resid = feature_acts = self.sparse_encoder_block(resid)
+        resid = feature_acts = self.sparse_encoder_block(resid_scaled)
         assert ((feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)).all()
 
         for block in self.decoder_blocks:
             resid = block(resid)
         
-        resid /= self.sparse_scalar
+        resid_scaled = resid / self.sparse_scalar
 
-        reconstructed = resid
+        reconstructed = resid_scaled
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
