@@ -25,7 +25,7 @@ class DataConfig:
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
 
-    n_token_blocks: int = 5
+    n_token_blocks: int = 6
     n_act_blocks: int = 2
 
     @property
