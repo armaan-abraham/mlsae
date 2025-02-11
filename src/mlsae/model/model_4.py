@@ -12,6 +12,6 @@ class DeepSAE4(DeepSAE):
             enc_dtype="fp32",
             device=device,
             topk=4,
-            act_decay=0,
+            act_decay=5e-5,
             lr=2e-4,
         )

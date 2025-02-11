@@ -51,7 +51,6 @@ class DeepSAE(nn.Module):
     ):
         super().__init__()
 
-        assert not encoder_dim_mults or encoder_dim_mults[-1] == 1
         self.name = name
         self.encoder_dims = [int(dim * act_size) for dim in encoder_dim_mults]
         self.decoder_dims = [int(dim * act_size) for dim in decoder_dim_mults]

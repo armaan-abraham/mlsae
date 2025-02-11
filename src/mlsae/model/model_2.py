@@ -1,4 +1,5 @@
 from mlsae.model.model import DeepSAE
+import torch
 
 
 class DeepSAE2(DeepSAE):
@@ -12,6 +13,11 @@ class DeepSAE2(DeepSAE):
             enc_dtype="fp32",
             device=device,
             topk=4,
-            act_decay=1e-3,
+            act_decay=1e-4,
             lr=2e-4,
         )
+
+    @torch.no_grad()
+    def process_gradients(self):
+        self.make_decoder_weights_and_grad_unit_norm()
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=0.25)
