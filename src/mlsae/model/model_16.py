@@ -19,10 +19,10 @@ class DeepSAE16(DeepSAE):
     def _forward(self, x):
         # Encode
         if self.encoder_dims:
-            resid = x
+            resid_pre = x
             for block in self.dense_encoder_blocks:
-                resid = block(resid)
-            resid += x
+                resid_pre = block(resid_pre)
+            resid = resid_pre + x
         else:
             resid = x
         
