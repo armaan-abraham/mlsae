@@ -9,24 +9,23 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     sae_batch_size_tokens: int = 100_000
-    act_block_size_sae_batch_size_mult: int = 200
+    act_block_size_sae_batch_size_mult: int = 100
 
     seq_len: int = 64
-    llm_batch_size_seqs: int = 2000
+    llm_batch_size_seqs: int = 250
 
     sae_dtype: str = "fp32"
-    cache_dtype: str = "bf16"
-    model_name: str = "pythia-31m"
-    tokenizer_name: str = "EleutherAI/pythia-31m"
+    model_name: str = "gpt2-small"
+    tokenizer_name: str = "gpt2"
     site: str = "resid_pre"
-    layer: int = 2
-    act_size: int = 256
+    layer: int = 9
+    act_size: int = 768
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
 
-    n_token_blocks: int = 5
-    n_act_blocks: int = 1
+    n_token_blocks: int = 4
+    n_act_blocks: int = 2
 
     @property
     def act_block_size_tokens(self) -> int:
@@ -43,13 +42,13 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    num_tokens: int = int(4e9)
+    num_tokens: int = int(1e10)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = True
 
     measure_dead_over_n_batches: int = 15
-    resample_dead_every_n_batches: int = 3015
+    resample_dead_every_n_batches: int = 4005
 
 
 train_cfg = TrainConfig()
