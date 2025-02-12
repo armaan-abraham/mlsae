@@ -12,7 +12,7 @@ class DataConfig:
     act_block_size_sae_batch_size_mult: int = 100
 
     seq_len: int = 64
-    llm_batch_size_seqs: int = 250
+    llm_batch_size_seqs: int = 300
 
     sae_dtype: str = "fp32"
     model_name: str = "gpt2-small"
