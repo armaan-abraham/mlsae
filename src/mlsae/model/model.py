@@ -87,8 +87,6 @@ class DeepSAE(nn.Module):
             )
             in_dim = dim
         
-        self.sparse_scalar = nn.Parameter(torch.ones(1))
-
         self.sparse_encoder_block = torch.nn.Sequential(
             self._create_linear_layer(
                 in_dim, self.sparse_dim
@@ -175,24 +173,18 @@ class DeepSAE(nn.Module):
 
     def _forward(self, x):
         # Encode
+        resid = x
         if self.encoder_dims:
-            resid = x
             for block in self.dense_encoder_blocks:
                 resid = block(resid)
-        else:
-            resid = x
-        
-        resid_scaled = resid * self.sparse_scalar
 
-        resid = feature_acts = self.sparse_encoder_block(resid_scaled)
+        resid = feature_acts = self.sparse_encoder_block(resid)
         assert ((feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)).all()
 
         for block in self.decoder_blocks:
             resid = block(resid)
-        
-        resid_scaled = resid / self.sparse_scalar
 
-        reconstructed = resid_scaled
+        reconstructed = resid
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
@@ -296,7 +288,7 @@ class DeepSAE(nn.Module):
         )
 
     def should_resample_sparse_features(self, idx):
-        return False
+        return not self.encoder_dims and not self.decoder_dims
 
     @torch.no_grad()
     def resample_sparse_features(self, idx):
