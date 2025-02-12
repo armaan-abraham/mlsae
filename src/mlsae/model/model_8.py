@@ -1,17 +1,19 @@
-from mlsae.model.model import DeepSAE
-import torch.nn as nn
+from mlsae.model.model_1 import DeepSAENoScale
+import torch
 
-class DeepSAE8(DeepSAE):
+
+class DeepSAE8(DeepSAENoScale):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[],
+            encoder_dim_mults=[1],
             sparse_dim_mult=8,
             decoder_dim_mults=[],
-            name="0-0-1",
+            name="1-0-2",
             enc_dtype="fp32",
             device=device,
             topk=4,
-            act_decay=1e-4,
+            act_decay=1e-3,
             lr=2e-4,
         )
+

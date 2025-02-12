@@ -2,14 +2,14 @@ from mlsae.model.model_1 import DeepSAENoScale
 import torch
 
 
-class DeepSAE3(DeepSAENoScale):
+class DeepSAE13(DeepSAENoScale):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[1],
+            encoder_dim_mults=[],
             sparse_dim_mult=8,
-            decoder_dim_mults=[1],
-            name="1-1-3",
+            decoder_dim_mults=[],
+            name="0-0-2",
             enc_dtype="fp32",
             device=device,
             topk=4,

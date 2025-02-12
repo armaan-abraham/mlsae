@@ -118,6 +118,28 @@ class DeepSAE(nn.Module):
     def _init_params(self):
         self._init_encoder_params()
         self._init_decoder_params()
+        self._tie_weights()
+
+    def _tie_weights(self):
+        # Get the encoder linear layers:
+        # For each dense encoder block, the linear layer is the first module in the Sequential.
+        encoder_linears = [block[0] for block in self.dense_encoder_blocks]
+        # Append the linear layer from the sparse encoder block (its first module)
+        encoder_linears.append(self.sparse_encoder_block[0])
+
+        # Get the decoder linear layers.
+        # Note that in _init_decoder_params, we add linear layers interleaved with ReLU.
+        # Extract only the Linear modules.
+        decoder_linears = [module for module in self.decoder_blocks if isinstance(module, nn.Linear)]
+
+        # Pair layers until either encoder or decoder runs out
+        # Last encoder layer pairs with first decoder layer, etc.
+        num_pairs = min(len(encoder_linears), len(decoder_linears))
+        for i in range(num_pairs):
+            enc_layer = encoder_linears[-(i+1)]  # Start from last encoder
+            dec_layer = decoder_linears[i]        # Start from first decoder
+            dec_layer.weight.data.copy_(enc_layer.weight.data.t())
+            dec_layer.weight.data = dec_layer.weight.data / dec_layer.weight.data.norm(dim=-1, keepdim=True)
 
     def start_act_stat_tracking(self):
         """
