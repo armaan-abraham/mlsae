@@ -25,12 +25,12 @@ class TopKActivation(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # If k >= number of features, do nothing
-        if self.k >= x.size(1):
+        if self.k >= x.size(-1):
             return x
         # Otherwise, keep only top k
-        topk_vals, topk_idx = torch.topk(x, self.k, dim=1)
+        topk_vals, topk_idx = torch.topk(x, self.k, dim=-1)
         mask = torch.zeros_like(x)
-        mask.scatter_(1, topk_idx, 1.0)
+        mask.scatter_(-1, topk_idx, 1.0)
         return x * mask
 
 
