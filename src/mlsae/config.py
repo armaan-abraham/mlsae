@@ -24,8 +24,8 @@ class DataConfig:
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
 
-    n_token_blocks: int = 4
-    n_act_blocks: int = 2
+    n_token_blocks: int = torch.cuda.device_count() + 1
+    n_act_blocks: int = torch.cuda.device_count()
 
     @property
     def act_block_size_tokens(self) -> int:
