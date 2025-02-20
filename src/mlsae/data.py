@@ -149,7 +149,7 @@ def tokenize_and_concatenate(
     return tokenized_dataset.with_format(type="torch")
 
 
-def stream_training_chunks(eval: bool = False):
+def stream_training_chunks(eval: bool = False, dataset_batch_size_entries: int | None = None, act_block_size_seqs: int | None = None):
     CLIENT_TIMEOUT_SECONDS = 60 * 60 * 2
     storage_options = {
         "client_kwargs": {
@@ -167,7 +167,7 @@ def stream_training_chunks(eval: bool = False):
     )
 
     dataset_iter = keep_single_column(dataset_iter, data_cfg.dataset_column_name)
-    dataset_iter = dataset_iter.batch(data_cfg.dataset_batch_size_entries)
+    dataset_iter = dataset_iter.batch(dataset_batch_size_entries or data_cfg.dataset_batch_size_entries)
 
     dataset_iter = tokenize_and_concatenate(
         dataset_iter,
@@ -178,7 +178,7 @@ def stream_training_chunks(eval: bool = False):
         column_name=data_cfg.dataset_column_name,
     )
 
-    dataset_iter = dataset_iter.batch(data_cfg.act_block_size_seqs)
+    dataset_iter = dataset_iter.batch(act_block_size_seqs or data_cfg.act_block_size_seqs)
 
     for batch in dataset_iter:
         yield batch["tokens"].to(dtype=torch.int32, device="cpu")
