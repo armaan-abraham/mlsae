@@ -82,17 +82,14 @@ def gpu_worker(
         results.put(e)
         raise
 
-def generate_acts_from_tokens(llm: transformer_lens.HookedTransformer, tokens: torch.Tensor):
+def generate_acts_from_tokens(llm: transformer_lens.HookedTransformer, tokens: torch.Tensor, device: str):
     all_acts = []
-    assert (
-        tokens.shape[0] == data_cfg.act_block_size_seqs
-    ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {tokens.shape[0]}"
 
     with torch.no_grad():
         with torch.autocast("cuda", dtype=DTYPES[data_cfg.sae_dtype]):
             for start in range(0, tokens.shape[0], data_cfg.llm_batch_size_seqs):
                 subblock = tokens[start : start + data_cfg.llm_batch_size_seqs].to(
-                    llm.device
+                    device
                 )
                 _, cache = llm.run_with_cache(
                     subblock,
@@ -131,7 +128,10 @@ def task_generate(
     # generation and training
     local_llm.to(device)
     token_block = shared_memory["token_blocks"][task_data["token_block_idx"]]
-    acts_block = generate_acts_from_tokens(local_llm, token_block)
+    assert (
+        token_block.shape[0] == data_cfg.act_block_size_seqs
+    ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {token_block.shape[0]}"
+    acts_block = generate_acts_from_tokens(local_llm, token_block, device)
     shared_memory["act_blocks"][task_data["act_block_idx"]].copy_(acts_block)
 
     results.put(

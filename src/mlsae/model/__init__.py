@@ -16,4 +16,3 @@ for module_info in pkgutil.iter_modules([str(package_dir)]):
         if hasattr(module, class_name):
             models.append(getattr(module, class_name))
 
-print("Found models:", models)

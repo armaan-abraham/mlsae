@@ -1,14 +1,16 @@
 import torch
 from mlsae.data import stream_training_chunks
-from mlsae.config import data_cfg
+from mlsae.config import data_cfg, DTYPES
 from mlsae.model import DeepSAE
 from mlsae.worker import generate_acts_from_tokens, preprocess_acts, get_baseline_mse
+import transformer_lens
 
-MAX_TOKENS = int(1e6)
+MAX_TOKENS = int(2e6)
 
 iterator = stream_training_chunks(
     dataset_batch_size_entries=2,
     act_block_size_seqs=MAX_TOKENS // data_cfg.seq_len + 2,
+    seed=42,
 )
 
 arch_to_model_id = {
@@ -23,7 +25,6 @@ arch_to_model_id = {
 chunks = []
 num_tokens = 0
 
-
 while num_tokens < MAX_TOKENS:
     chunk = next(iterator)
     chunks.append(chunk)
@@ -33,36 +34,33 @@ tokens = torch.cat(chunks)
 
 device = "cuda"
 
+llm = transformer_lens.HookedTransformer.from_pretrained(
+    data_cfg.model_name, device=device
+).to(DTYPES[data_cfg.sae_dtype])
 
-for arch in list(arch_to_model_id.keys())[:1]:
+acts = generate_acts_from_tokens(llm, tokens, device)
+acts = preprocess_acts(acts)
+
+for arch in list(arch_to_model_id.keys()):
     sae = DeepSAE.load(
-        arch, load_from_s3=True, model_id=arch_to_model_id[arch]
+        arch, load_from_s3=False, model_id=arch_to_model_id[arch]
     ).eval()
 
     sae.to(device)
 
     tokens = tokens.to(device)
 
-    acts = generate_acts_from_tokens(sae, tokens)
-    print(f"{acts.shape=}")
-    acts = preprocess_acts(acts)
-    print(f"{acts.shape=}")
-
     normalized_mse_list = []
     # Process in batches
     for start in range(0, acts.shape[0], data_cfg.sae_batch_size_tokens):
         acts_batch = acts[start : start + data_cfg.sae_batch_size_tokens]
         sae_mse = sae(acts_batch)[2]
-        print(f"{sae_mse=}")
 
         baseline_mse = get_baseline_mse(acts_batch)
-        print(f"{baseline_mse=}")
 
         normalized_mse = sae_mse / baseline_mse
-        print(f"{normalized_mse=}")
 
-        normalized_mse_list.append(normalized_mse)
+        normalized_mse_list.append(normalized_mse.item())
 
     normalized_mse_list = torch.tensor(normalized_mse_list)
-    print(f"{normalized_mse_list.mean()=}")
-    print(f"{normalized_mse_list.std()=}")
+    print(f"{arch=}, {normalized_mse_list.mean()=}")
