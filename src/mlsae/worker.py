@@ -82,6 +82,32 @@ def gpu_worker(
         results.put(e)
         raise
 
+def generate_acts_from_tokens(llm: transformer_lens.HookedTransformer, tokens: torch.Tensor):
+    all_acts = []
+    assert (
+        tokens.shape[0] == data_cfg.act_block_size_seqs
+    ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {tokens.shape[0]}"
+
+    with torch.no_grad():
+        with torch.autocast("cuda", dtype=DTYPES[data_cfg.sae_dtype]):
+            for start in range(0, tokens.shape[0], data_cfg.llm_batch_size_seqs):
+                subblock = tokens[start : start + data_cfg.llm_batch_size_seqs].to(
+                    llm.device
+                )
+                _, cache = llm.run_with_cache(
+                    subblock,
+                    stop_at_layer=data_cfg.layer + 1,
+                    names_filter=data_cfg.act_name,
+                    return_cache_object=True,
+                )
+                acts = cache.cache_dict[data_cfg.act_name]
+                assert (
+                    acts.shape[-1] == data_cfg.act_size
+                ), f"Expected {data_cfg.act_size} act size, got {acts.shape[-1]}"
+                acts = acts.reshape(acts.shape[0] * acts.shape[1], data_cfg.act_size)
+                all_acts.append(acts)
+
+    return torch.cat(all_acts, dim=0)
 
 def task_generate(
     results: mp.Queue,
@@ -104,32 +130,8 @@ def task_generate(
     # get this task, but it is acceptable so we can have a GPU work on both act
     # generation and training
     local_llm.to(device)
-    all_acts = []
     token_block = shared_memory["token_blocks"][task_data["token_block_idx"]]
-    assert (
-        token_block.shape[0] == data_cfg.act_block_size_seqs
-    ), f"Expected {data_cfg.act_block_size_seqs} tokens, got {token_block.shape[0]}"
-
-    with torch.no_grad():
-        with torch.autocast("cuda", dtype=DTYPES[data_cfg.sae_dtype]):
-            for start in range(0, token_block.shape[0], data_cfg.llm_batch_size_seqs):
-                subblock = token_block[start : start + data_cfg.llm_batch_size_seqs].to(
-                    device
-                )
-                _, cache = local_llm.run_with_cache(
-                    subblock,
-                    stop_at_layer=data_cfg.layer + 1,
-                    names_filter=data_cfg.act_name,
-                    return_cache_object=True,
-                )
-                acts = cache.cache_dict[data_cfg.act_name]
-                assert (
-                    acts.shape[-1] == data_cfg.act_size
-                ), f"Expected {data_cfg.act_size} act size, got {acts.shape[-1]}"
-                acts = acts.reshape(acts.shape[0] * acts.shape[1], data_cfg.act_size)
-                all_acts.append(acts)
-
-    acts_block = torch.cat(all_acts, dim=0)
+    acts_block = generate_acts_from_tokens(local_llm, token_block)
     shared_memory["act_blocks"][task_data["act_block_idx"]].copy_(acts_block)
 
     results.put(
@@ -199,6 +201,10 @@ def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Ten
                     exp_avg[:, idx] = 0
                     exp_avg_sq[:, idx] = 0
 
+def preprocess_acts(acts: torch.Tensor):
+    acts -= acts.mean(dim=1, keepdim=True)
+    acts /= acts.norm(dim=1, keepdim=True)
+    return acts
 
 def task_train(
     results: mp.Queue, device: str, task_data: dict, shared_memory: SharedMemory
@@ -235,9 +241,7 @@ def task_train(
     for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
         acts = act_block[start : start + data_cfg.sae_batch_size_tokens].to(device)
 
-        # Normalize activations to zero mean and unit norm
-        acts -= acts.mean(dim=1, keepdim=True)
-        acts /= acts.norm(dim=1, keepdim=True)
+        acts = preprocess_acts(acts)
 
         loss, act_mag, mse_loss, feature_acts, _ = model(acts)
         loss.backward()
