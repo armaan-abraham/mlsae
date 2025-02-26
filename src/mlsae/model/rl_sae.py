@@ -47,9 +47,8 @@ class RLFeatureSelector(nn.Module):
         # Store for learning
         self.saved_probs = probs
 
-        # Sample multiple masks - shape: [num_samples, batch_size, sparse_dim]
+        # Sample multiple masks: shape [num_samples, batch_size, sparse_dim]
         masks = torch.stack([self.sample_mask(probs) for _ in range(num_samples)])
-
         return masks
 
     def apply_mask(self, x, mask):
@@ -58,19 +57,25 @@ class RLFeatureSelector(nn.Module):
         output = magnitudes * mask * self.feature_scales.unsqueeze(0)
         return output
 
-    def update_selector(self, best_mask):
+    def update_selector(self, best_masks):
         """
-        Update the selector to increase probability of selecting the best mask
+        Update the selector to increase probability of selecting the best mask.
+        best_masks: [batch_size, sparse_dim]
         """
         if not hasattr(self, "saved_probs"):
             return 0.0
 
-        # Calculate log-probabilities of the best mask
-        log_probs = torch.log(self.saved_probs + 1e-8) * best_mask + torch.log(
-            1 - self.saved_probs + 1e-8
-        ) * (1 - best_mask)
+        # self.saved_probs: [batch_size, sparse_dim]
+        # best_masks: [batch_size, sparse_dim]
 
-        # Simple loss to maximize probability of the best mask
+        # Calculate log-probabilities for each sample's best mask
+        # shape [batch_size, sparse_dim]
+        log_probs = (
+            torch.log(self.saved_probs + 1e-8) * best_masks
+            + torch.log(1 - self.saved_probs + 1e-8) * (1 - best_masks)
+        )
+
+        # Mean over batch and features
         selector_loss = -log_probs.mean()
 
         return selector_loss
@@ -101,7 +106,6 @@ class RLSAE(DeepSAE):
         self.rl_temperature = rl_temperature
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
-        # Initialize with parent class but don't add TopKActivation
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=encoder_dim_mults,
@@ -116,12 +120,8 @@ class RLSAE(DeepSAE):
         )
 
     def _init_encoder_params(self):
-        """
-        Overriding to remove TopKActivation - we'll add RL feature selector separately
-        """
         self.dense_encoder_blocks = torch.nn.ModuleList()
         in_dim = self.act_size
-
         for dim in self.encoder_dims:
             linear_layer = self._create_linear_layer(in_dim, dim)
             self.dense_encoder_blocks.append(
@@ -129,12 +129,10 @@ class RLSAE(DeepSAE):
             )
             in_dim = dim
 
-        # Create the sparse encoder without activation (we'll apply RL selection separately)
         self.sparse_encoder_block = torch.nn.Sequential(
             self._create_linear_layer(in_dim, self.sparse_dim),
         )
 
-        # Feature selector
         self.rl_selector = RLFeatureSelector(
             sparse_dim=self.sparse_dim,
             temperature=self.rl_temperature,
@@ -143,106 +141,106 @@ class RLSAE(DeepSAE):
         )
 
     def _encode_up_to_selection(self, x):
-        """Encode the input up to the point of feature selection"""
         resid = x
-        # Pass through dense encoder blocks
-        if self.encoder_dims:
-            for block in self.dense_encoder_blocks:
-                resid = block(resid)
-
-        # Get raw sparse encoder outputs
+        for block in self.dense_encoder_blocks:
+            resid = block(resid)
         sparse_features = self.sparse_encoder_block(resid)
         return sparse_features
 
     def _decode(self, feature_acts):
-        """Decode from the feature activations"""
         resid = feature_acts
         for block in self.decoder_blocks:
             resid = block(resid)
         return resid
 
-    def _evaluate_sample(self, x, sparse_features, mask):
-        """Evaluate a single feature selection sample"""
-        # Apply mask to get feature activations
-        feature_acts = self.rl_selector.apply_mask(sparse_features, mask)
+    def _evaluate_masks(self, x, sparse_features, masks):
+        """
+        Evaluate per-sample losses for each mask.
+        masks: [num_samples, batch_size, sparse_dim]
+        Returns a tensor of shape [num_samples, batch_size]
+        with the total loss per sample for each mask.
+        """
+        batch_size = x.shape[0]
 
-        # Decode and compute losses
-        reconstructed = self._decode(feature_acts)
+        # We'll accumulate a loss for each sample, for each mask
+        all_losses = []
 
-        # MSE reconstruction loss
-        mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
+        for i in range(masks.shape[0]):
+            mask_i = masks[i]  # shape [batch_size, sparse_dim]
+            feature_acts = self.rl_selector.apply_mask(sparse_features, mask_i)
+            reconstructed = self._decode(feature_acts)
 
-        assert torch.all((mask == 0) | (mask == 1)), "Mask must be binary"
-        # Sparsity penalty - encourage using fewer features
-        sparsity_penalty = torch.mean(mask.sum(dim=1)) * self.L0_penalty
+            # MSE per sample: shape [batch_size]
+            mse_loss_per_sample = (reconstructed - x).pow(2).mean(dim=1)
 
-        # Regularization loss for feature magnitudes
-        act_mag = feature_acts.pow(2).mean()
-        act_mag_loss = act_mag * self.act_decay
+            # Sparsity penalty per sample: shape [batch_size]
+            # sum of active features per sample, times L0 penalty
+            sparsity_penalty_per_sample = mask_i.sum(dim=1) * self.L0_penalty
 
-        # Total loss/reward
-        loss = mse_loss + sparsity_penalty + act_mag_loss
+            # No additional activation magnitude penalty in this snippet,
+            # but if you have self.act_decay, it can be added similarly per sample.
+            # For example:
+            # act_mag_per_sample = feature_acts.pow(2).mean(dim=1)
+            # act_mag_loss_per_sample = act_mag_per_sample * self.act_decay
 
-        return {
-            "loss": loss,
-            "mse_loss": mse_loss,
-            "feature_acts": feature_acts,
-            "reconstructed": reconstructed,
-            "act_mag": act_mag,
-            "sparsity_penalty": sparsity_penalty,
-            "mask": mask,
-        }
+            # Combine losses per sample
+            total_loss_per_sample = mse_loss_per_sample + sparsity_penalty_per_sample
+            all_losses.append(total_loss_per_sample)
+
+        # Stack into shape [num_samples, batch_size]
+        return torch.stack(all_losses, dim=0)
 
     def _forward(self, x):
-        # Encode up to the point of selection
         sparse_features = self._encode_up_to_selection(x)
 
         if self.training:
-            # Sample multiple feature selections
             masks = self.rl_selector.sample_masks(sparse_features)
+            # Evaluate each mask's per-sample loss
+            per_sample_losses = self._evaluate_masks(x, sparse_features, masks)
+            # per_sample_losses shape: [num_samples, batch_size]
 
-            # Evaluate each sample
-            results = []
-            for i in range(masks.shape[0]):
-                mask = masks[i]
-                result = self._evaluate_sample(x, sparse_features, mask)
-                results.append(result)
+            # For each sample, pick the mask that yields minimal loss
+            best_indices = per_sample_losses.argmin(dim=0)  # [batch_size]
 
-            # Find the best sample (lowest loss)
-            best_idx = min(range(len(results)), key=lambda i: results[i]["loss"])
-            best_result = results[best_idx]
+            # Gather the best mask for each sample
+            batch_size = x.shape[0]
+            best_masks = []
+            for b in range(batch_size):
+                best_masks.append(masks[best_indices[b], b])  # [sparse_dim]
 
-            # Compute selector loss to increase probability of best mask
-            selector_loss = self.rl_selector.update_selector(best_result["mask"])
+            best_masks = torch.stack(best_masks, dim=0)  # [batch_size, sparse_dim]
 
-            # Add weighted selector loss to the total
+            # Apply best masks and get final reconstruction
+            best_feature_acts = self.rl_selector.apply_mask(sparse_features, best_masks)
+            best_reconstructed = self._decode(best_feature_acts)
+
+            # Compute the final batch-averaged MSE loss
+            mse_loss = (best_reconstructed - x).pow(2).mean()
+
+            # RL update: encourage selector to pick the best masks
+            selector_loss = self.rl_selector.update_selector(best_masks)
             weighted_selector_loss = selector_loss * self.rl_loss_weight
-            best_result["loss"] = best_result["loss"] + weighted_selector_loss
-            best_result["selector_loss"] = selector_loss
+            final_loss = mse_loss + weighted_selector_loss
 
             return (
-                best_result["loss"],
-                best_result["act_mag"],
-                best_result["mse_loss"],
-                best_result["feature_acts"],
-                best_result["reconstructed"],
-                best_result["selector_loss"],
+                final_loss,
+                torch.tensor(0.0),  # act_mag placeholder
+                mse_loss,
+                best_feature_acts,
+                best_reconstructed,
+                selector_loss,
             )
+
         else:
-            # In inference mode, just use the deterministic forward
+            # Inference: deterministic threshold
             feature_acts = self.rl_selector(sparse_features)
             reconstructed = self._decode(feature_acts)
-
-            # Calculate losses for metrics
-            mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-            act_mag = feature_acts.pow(2).mean()
-            act_mag_loss = act_mag * self.act_decay
-
-            loss = mse_loss + act_mag_loss
+            mse_loss = (reconstructed - x).pow(2).mean()
+            loss = mse_loss  # plus any optional penalty
 
             return (
                 loss,
-                act_mag,
+                torch.tensor(0.0),  # act_mag placeholder
                 mse_loss,
                 feature_acts,
                 reconstructed,
@@ -254,7 +252,6 @@ class RLSAE(DeepSAE):
             self._forward(x)
         )
 
-        # Tracking logic
         if self.track_acts_stats:
             fa_float = feature_acts.float()
             self.acts_sum += fa_float.sum().item()
@@ -269,7 +266,6 @@ class RLSAE(DeepSAE):
     @torch.no_grad()
     def resample_sparse_features(self, idx):
         logging.info(f"Resampling sparse features {idx.sum().item()}")
-        # Handle the encoder weights
         new_W_enc = torch.zeros_like(self.sparse_encoder_block[0].weight)
         new_W_dec = torch.zeros_like(self.decoder_blocks[0].weight)
         nn.init.kaiming_normal_(new_W_enc)
@@ -281,7 +277,6 @@ class RLSAE(DeepSAE):
         self.sparse_encoder_block[0].bias.data[idx] = new_b_enc[idx]
         self.decoder_blocks[0].weight.data[:, idx] = new_W_dec[:, idx]
 
-        # Also reset the feature scales for resampled features
         self.rl_selector.feature_scales.data[idx] = 1.0
 
     def get_config_dict(self):
