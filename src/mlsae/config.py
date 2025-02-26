@@ -9,7 +9,7 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     sae_batch_size_tokens: int = 100_000
-    act_block_size_sae_batch_size_mult: int = 100
+    act_block_size_sae_batch_size_mult: int = 25
 
     seq_len: int = 32
     llm_batch_size_seqs: int = 1000
@@ -45,7 +45,7 @@ class TrainConfig:
     num_tokens: int = int(1e8)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    save_to_s3: bool = True
+    save_to_s3: bool = False
 
     measure_dead_over_n_batches: int = 15
     resample_dead_every_n_batches: int = 4005

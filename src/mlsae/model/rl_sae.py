@@ -130,7 +130,9 @@ class RLSAE(DeepSAE):
             in_dim = dim
 
         # Create the sparse encoder without activation (we'll apply RL selection separately)
-        self.sparse_encoder = self._create_linear_layer(in_dim, self.sparse_dim)
+        self.sparse_encoder_block = torch.nn.Sequential(
+            self._create_linear_layer(in_dim, self.sparse_dim),
+        )
 
         # Feature selector
         self.rl_selector = RLFeatureSelector(
@@ -149,7 +151,7 @@ class RLSAE(DeepSAE):
                 resid = block(resid)
 
         # Get raw sparse encoder outputs
-        sparse_features = self.sparse_encoder(resid)
+        sparse_features = self.sparse_encoder_block(resid)
         return sparse_features
 
     def _decode(self, feature_acts):
@@ -170,6 +172,7 @@ class RLSAE(DeepSAE):
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
 
+        assert torch.all((mask == 0) | (mask == 1)), "Mask must be binary"
         # Sparsity penalty - encourage using fewer features
         sparsity_penalty = torch.mean(mask.sum(dim=1)) * self.L0_penalty
 
@@ -267,15 +270,15 @@ class RLSAE(DeepSAE):
     def resample_sparse_features(self, idx):
         logging.info(f"Resampling sparse features {idx.sum().item()}")
         # Handle the encoder weights
-        new_W_enc = torch.zeros_like(self.sparse_encoder.weight)
+        new_W_enc = torch.zeros_like(self.sparse_encoder_block[0].weight)
         new_W_dec = torch.zeros_like(self.decoder_blocks[0].weight)
         nn.init.kaiming_normal_(new_W_enc)
         nn.init.kaiming_normal_(new_W_dec)
 
-        new_b_enc = torch.zeros_like(self.sparse_encoder.bias)
+        new_b_enc = torch.zeros_like(self.sparse_encoder_block[0].bias)
 
-        self.sparse_encoder.weight.data[idx] = new_W_enc[idx]
-        self.sparse_encoder.bias.data[idx] = new_b_enc[idx]
+        self.sparse_encoder_block[0].weight.data[idx] = new_W_enc[idx]
+        self.sparse_encoder_block[0].bias.data[idx] = new_b_enc[idx]
         self.decoder_blocks[0].weight.data[:, idx] = new_W_dec[:, idx]
 
         # Also reset the feature scales for resampled features

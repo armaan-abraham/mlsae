@@ -11,8 +11,8 @@ class DeepSAE4(RLSAE):
             name="RL3",
             device=device,
             lr=2e-4,
-            rl_temperature=1,
+            rl_temperature=2,
             num_samples=3,
-            L0_penalty=1e-2,
-            rl_loss_weight=0.5,
+            L0_penalty=2,
+            rl_loss_weight=2,
         )

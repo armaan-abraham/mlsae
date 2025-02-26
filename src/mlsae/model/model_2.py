@@ -13,6 +13,6 @@ class DeepSAE2(RLSAE):
             lr=2e-4,
             rl_temperature=2,
             num_samples=3,
-            L0_penalty=1e-2,
-            rl_loss_weight=1,
+            L0_penalty=4e-1,
+            rl_loss_weight=2,
         )
