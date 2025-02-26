@@ -10,7 +10,7 @@ from mlsae.data import stream_training_chunks
 from mlsae.model import DeepSAE, SparseAdam
 from mlsae.shared_memory import SharedMemory
 
-
+import os
 class TaskType(enum.Enum):
     TOKENS = 0
     ACTS = 1
@@ -20,6 +20,7 @@ class TaskType(enum.Enum):
 def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
     logging.info("Starting CPU worker")
     token_stream = stream_training_chunks()
+    token_block_cache_idx = 0
     try:
         while True:
             logging.info("CPU worker waiting for task")
@@ -30,11 +31,16 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
             task_type, task_data = task
             assert task_type == TaskType.TOKENS
             token_block_idx = task_data["token_block_idx"]
-            # It is okay that we are not checking for stopiteration. We are
-            # setting the max tokens based on knowledge of the dataset and even
-            # if we are wrong, it's not a big deal that the exception gets
-            # bubbled up.
-            token_block = next(token_stream)
+
+            token_block_path = f"token_block_{token_block_cache_idx}.pt"
+            cache_hit = os.path.exists(token_block_path)
+
+            if cache_hit:
+                token_block = torch.load(token_block_path, map_location="cpu")
+                logging.info(f"Loaded token block {token_block_cache_idx} from {token_block_path}")
+            else:
+                token_block = next(token_stream)
+
             assert (
                 token_block.shape == (data_cfg.act_block_size_seqs, data_cfg.seq_len)
             ), f"Expected {(data_cfg.act_block_size_seqs, data_cfg.seq_len)}, got {token_block.shape}"
@@ -45,6 +51,13 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
                     {"token_block_idx": token_block_idx},
                 )
             )
+
+            if not cache_hit:
+                logging.info(f"Saving token block {token_block_cache_idx} to {token_block_path}")
+                torch.save(token_block, token_block_path)
+                logging.info(f"Successfully saved token block {token_block_cache_idx}")
+
+            token_block_cache_idx += 1
     except Exception as e:
         results.put(e)
         raise
@@ -249,7 +262,11 @@ def task_train(
 
         acts = preprocess_acts(acts)
 
-        loss, act_mag, mse_loss, feature_acts, _ = model(acts)
+        # Use dictionary return format
+        result = model(acts, iteration=n_iter)
+        loss = result["loss"]
+        feature_acts = result["feature_acts"]
+        
         loss.backward()
         model.process_gradients()
         optimizer.step()
@@ -270,12 +287,19 @@ def task_train(
         baseline_mse = get_baseline_mse(acts)
         metrics = {
             "loss": loss.item(),
-            "act_mag": act_mag.item(),
-            "mse": mse_loss.item(),
+            "mse": result["mse_loss"].item(),
             "baseline_mse": baseline_mse.item(),
-            "normalized_mse": (mse_loss / baseline_mse).item(),
+            "normalized_mse": (result["mse_loss"] / baseline_mse).item(),
             "avg_nonzero_features": avg_nonzero_features,
         }
+
+        # Conditionally add any optional metrics
+        optional_metrics = ["act_mag", "selector_loss", "L0_penalty", "temperature"]
+        for metric in optional_metrics:
+            if metric in result:
+                metrics[metric] = result[metric]
+                if isinstance(metrics[metric], torch.Tensor):
+                    metrics[metric] = metrics[metric].item()
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
             dead_features = act_freq_history == 0

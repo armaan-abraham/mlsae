@@ -5,7 +5,12 @@ import torch.nn.functional as F
 
 from mlsae.model.model import DeepSAE
 from mlsae.config import DTYPES
+import logging
 
+
+DEFAULT_TEMPERATURE_INITIAL = 5
+DEFAULT_TEMPERATURE_FINAL = 1.1
+DEFAULT_TEMPERATURE_DECAY_HALF_LIFE = 500
 
 class RLFeatureSelector(nn.Module):
     """
@@ -13,16 +18,31 @@ class RLFeatureSelector(nn.Module):
     based on probabilities from a sigmoid activation.
     """
 
-    def __init__(self, sparse_dim, temperature=1.0, L0_penalty=1e-2, num_samples=10):
+    def __init__(self, sparse_dim, temperature_initial=DEFAULT_TEMPERATURE_INITIAL, temperature_final=DEFAULT_TEMPERATURE_FINAL, L0_penalty=1e-2, num_samples=10, decay_half_life=DEFAULT_TEMPERATURE_DECAY_HALF_LIFE):
         super().__init__()
         self.sparse_dim = sparse_dim
-        self.temperature = temperature
+        self.temperature_initial = temperature_initial
+        self.temperature_final = temperature_final
+        self.temperature = temperature_initial  # Current temperature
         self.L0_penalty = L0_penalty
         self.feature_scales = nn.Parameter(torch.ones(sparse_dim))
         self.num_samples = num_samples
+        self.decay_half_life = decay_half_life
+
+    def get_current_temperature(self, iteration):
+        """Calculate the current temperature based on training iteration"""
+        # Standard annealing formula: final + (initial - final) * decay_factor
+        decay_factor = 0.5 ** (iteration / self.decay_half_life)
+        return self.temperature_final + (self.temperature_initial - self.temperature_final) * decay_factor
+        
+    def update_temperature(self, iteration):
+        """Update the temperature based on the current training iteration"""
+        self.temperature = self.get_current_temperature(iteration)
+        return self.temperature
 
     def get_probs(self, x):
         """Get activation probabilities from raw encoder outputs"""
+        assert self.temperature > 0, f"Temperature must be greater than 0, got {self.temperature}"
         return torch.sigmoid(x / self.temperature)
 
     def sample_mask(self, probs):
@@ -97,13 +117,20 @@ class RLSAE(DeepSAE):
         enc_dtype: str = "fp32",
         device: str = "cpu",
         lr: float = 1e-4,
-        rl_temperature: float = 1.0,
         num_samples: int = 3,
         L0_penalty: float = 1e-2,
         rl_loss_weight: float = 1.0,
+
+        temperature_initial: float = DEFAULT_TEMPERATURE_INITIAL,
+        temperature_final: float = DEFAULT_TEMPERATURE_FINAL,
+        temperature_decay_half_life: int = DEFAULT_TEMPERATURE_DECAY_HALF_LIFE,
     ):
         self.L0_penalty = L0_penalty
-        self.rl_temperature = rl_temperature
+
+        self.temperature_initial = temperature_initial
+        self.temperature_final = temperature_final
+        self.temperature_decay_half_life = temperature_decay_half_life
+
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
         super().__init__(
@@ -135,9 +162,11 @@ class RLSAE(DeepSAE):
 
         self.rl_selector = RLFeatureSelector(
             sparse_dim=self.sparse_dim,
-            temperature=self.rl_temperature,
+            temperature_initial=self.temperature_initial,
+            temperature_final=self.temperature_final,
             L0_penalty=self.L0_penalty,
             num_samples=self.num_samples,
+            decay_half_life=self.temperature_decay_half_life,
         )
 
     def _encode_up_to_selection(self, x):
@@ -177,12 +206,6 @@ class RLSAE(DeepSAE):
             # sum of active features per sample, times L0 penalty
             sparsity_penalty_per_sample = mask_i.sum(dim=1) * self.L0_penalty
 
-            # No additional activation magnitude penalty in this snippet,
-            # but if you have self.act_decay, it can be added similarly per sample.
-            # For example:
-            # act_mag_per_sample = feature_acts.pow(2).mean(dim=1)
-            # act_mag_loss_per_sample = act_mag_per_sample * self.act_decay
-
             # Combine losses per sample
             total_loss_per_sample = mse_loss_per_sample + sparsity_penalty_per_sample
             all_losses.append(total_loss_per_sample)
@@ -190,8 +213,12 @@ class RLSAE(DeepSAE):
         # Stack into shape [num_samples, batch_size]
         return torch.stack(all_losses, dim=0)
 
-    def _forward(self, x):
+    def _forward(self, x, iteration=None):
         sparse_features = self._encode_up_to_selection(x)
+
+        # Update temperature if iteration is provided
+        if iteration is not None and self.training:
+            self.rl_selector.update_temperature(iteration)
 
         if self.training:
             masks = self.rl_selector.sample_masks(sparse_features)
@@ -204,14 +231,11 @@ class RLSAE(DeepSAE):
 
             # Gather the best mask for each sample
             batch_size = x.shape[0]
-            best_masks = []
-            for b in range(batch_size):
-                best_masks.append(masks[best_indices[b], b])  # [sparse_dim]
-
-            best_masks = torch.stack(best_masks, dim=0)  # [batch_size, sparse_dim]
+            best_masks = masks[best_indices, torch.arange(batch_size)]  # [batch_size, sparse_dim]
 
             # Apply best masks and get final reconstruction
             best_feature_acts = self.rl_selector.apply_mask(sparse_features, best_masks)
+
             best_reconstructed = self._decode(best_feature_acts)
 
             # Compute the final batch-averaged MSE loss
@@ -222,14 +246,14 @@ class RLSAE(DeepSAE):
             weighted_selector_loss = selector_loss * self.rl_loss_weight
             final_loss = mse_loss + weighted_selector_loss
 
-            return (
-                final_loss,
-                torch.tensor(0.0),  # act_mag placeholder
-                mse_loss,
-                best_feature_acts,
-                best_reconstructed,
-                selector_loss,
-            )
+            return {
+                "loss": final_loss,
+                "mse_loss": mse_loss,
+                "feature_acts": best_feature_acts,
+                "reconstructed": best_reconstructed,
+                "selector_loss": selector_loss,
+                "temperature": self.rl_selector.temperature,
+            }
 
         else:
             # Inference: deterministic threshold
@@ -238,30 +262,28 @@ class RLSAE(DeepSAE):
             mse_loss = (reconstructed - x).pow(2).mean()
             loss = mse_loss  # plus any optional penalty
 
-            return (
-                loss,
-                torch.tensor(0.0),  # act_mag placeholder
-                mse_loss,
-                feature_acts,
-                reconstructed,
-                torch.tensor(0.0),
-            )
+            return {
+                "loss": loss,
+                "mse_loss": mse_loss,
+                "feature_acts": feature_acts,
+                "reconstructed": reconstructed,
+                "selector_loss": torch.tensor(0.0),
+                "temperature": self.rl_selector.temperature,
+            }
 
-    def forward(self, x):
-        loss, act_mag, mse_loss, feature_acts, reconstructed, selector_loss = (
-            self._forward(x)
-        )
-
+    def forward(self, x, iteration=None):
+        result = self._forward(x, iteration)
+        
         if self.track_acts_stats:
-            fa_float = feature_acts.float()
+            fa_float = result["feature_acts"].float()
             self.acts_sum += fa_float.sum().item()
             self.acts_sq_sum += (fa_float**2).sum().item()
             self.acts_elem_count += fa_float.numel()
 
-            self.mse_sum += mse_loss.item()
+            self.mse_sum += result["mse_loss"].item()
             self.mse_count += 1
 
-        return loss, act_mag, mse_loss, feature_acts, reconstructed
+        return result
 
     @torch.no_grad()
     def resample_sparse_features(self, idx):
@@ -283,7 +305,9 @@ class RLSAE(DeepSAE):
         config = super().get_config_dict()
         config.update(
             {
-                "rl_temperature": self.rl_selector.temperature,
+                "temperature_initial": self.temperature_initial,
+                "temperature_final": self.temperature_final,
+                "temperature_decay_half_life": self.temperature_decay_half_life,
                 "L0_penalty": self.rl_selector.L0_penalty,
                 "num_samples": self.rl_selector.num_samples,
                 "rl_loss_weight": self.rl_loss_weight,

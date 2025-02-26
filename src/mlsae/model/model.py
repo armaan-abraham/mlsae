@@ -165,7 +165,7 @@ class DeepSAE(nn.Module):
             },
         ]
 
-    def _forward(self, x):
+    def _forward(self, x, iteration=None):
         # Encode
         resid = x
         if self.encoder_dims:
@@ -189,22 +189,28 @@ class DeepSAE(nn.Module):
 
         loss = mse_loss + act_mag_loss
 
-        return loss, act_mag, mse_loss, feature_acts, reconstructed
+        return {
+            "loss": loss,
+            "act_mag": act_mag,
+            "mse_loss": mse_loss,
+            "feature_acts": feature_acts,
+            "reconstructed": reconstructed,
+        }
 
-    def forward(self, x):
-        loss, act_mag, mse_loss, feature_acts, reconstructed = self._forward(x)
+    def forward(self, x, iteration=None):
+        result = self._forward(x, iteration)
 
         # Optionally track activation stats and MSE
         if self.track_acts_stats:
-            fa_float = feature_acts.float()
+            fa_float = result["feature_acts"].float()
             self.acts_sum += fa_float.sum().item()
             self.acts_sq_sum += (fa_float**2).sum().item()
             self.acts_elem_count += fa_float.numel()
 
-            self.mse_sum += mse_loss.item()
+            self.mse_sum += result["mse_loss"].item()
             self.mse_count += 1
 
-        return loss, act_mag, mse_loss, feature_acts, reconstructed
+        return result
 
     def get_activation_stats(self):
         """
