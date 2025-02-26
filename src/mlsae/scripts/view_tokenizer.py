@@ -7,4 +7,3 @@ print(model.tokenizer)
 
 
 tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
-

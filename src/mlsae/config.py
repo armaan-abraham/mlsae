@@ -11,15 +11,15 @@ class DataConfig:
     sae_batch_size_tokens: int = 100_000
     act_block_size_sae_batch_size_mult: int = 100
 
-    seq_len: int = 64
-    llm_batch_size_seqs: int = 300
+    seq_len: int = 32
+    llm_batch_size_seqs: int = 1000
 
     sae_dtype: str = "fp32"
-    model_name: str = "gpt2-small"
-    tokenizer_name: str = "gpt2"
+    model_name: str = "pythia-14m"
+    tokenizer_name: str = "EleutherAI/gpt-neox-20b"
     site: str = "resid_pre"
-    layer: int = 9
-    act_size: int = 768
+    layer: int = 2
+    act_size: int = 128
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 50
@@ -42,7 +42,7 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    num_tokens: int = int(1e10)
+    num_tokens: int = int(1e8)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = True

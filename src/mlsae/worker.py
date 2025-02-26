@@ -82,7 +82,10 @@ def gpu_worker(
         results.put(e)
         raise
 
-def generate_acts_from_tokens(llm: transformer_lens.HookedTransformer, tokens: torch.Tensor, device: str):
+
+def generate_acts_from_tokens(
+    llm: transformer_lens.HookedTransformer, tokens: torch.Tensor, device: str
+):
     all_acts = []
 
     with torch.no_grad():
@@ -105,6 +108,7 @@ def generate_acts_from_tokens(llm: transformer_lens.HookedTransformer, tokens: t
                 all_acts.append(acts)
 
     return torch.cat(all_acts, dim=0)
+
 
 def task_generate(
     results: mp.Queue,
@@ -201,10 +205,12 @@ def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Ten
                     exp_avg[:, idx] = 0
                     exp_avg_sq[:, idx] = 0
 
+
 def preprocess_acts(acts: torch.Tensor):
     acts -= acts.mean(dim=1, keepdim=True)
     acts /= acts.norm(dim=1, keepdim=True)
     return acts
+
 
 def task_train(
     results: mp.Queue, device: str, task_data: dict, shared_memory: SharedMemory

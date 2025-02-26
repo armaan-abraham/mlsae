@@ -79,18 +79,14 @@ class DeepSAE(nn.Module):
         in_dim = self.act_size
 
         for dim in self.encoder_dims:
-            linear_layer = self._create_linear_layer(
-                in_dim, dim
-            )
+            linear_layer = self._create_linear_layer(in_dim, dim)
             self.dense_encoder_blocks.append(
                 torch.nn.Sequential(linear_layer, nn.ReLU())
             )
             in_dim = dim
-        
+
         self.sparse_encoder_block = torch.nn.Sequential(
-            self._create_linear_layer(
-                in_dim, self.sparse_dim
-            ),
+            self._create_linear_layer(in_dim, self.sparse_dim),
             nn.ReLU(),
             TopKActivation(self.topk),
         )
@@ -100,17 +96,13 @@ class DeepSAE(nn.Module):
         in_dim = self.sparse_dim
 
         for dim in self.decoder_dims:
-            linear_layer = self._create_linear_layer(
-                in_dim, dim, normalize=True
-            )
+            linear_layer = self._create_linear_layer(in_dim, dim, normalize=True)
             self.decoder_blocks.append(linear_layer)
             self.decoder_blocks.append(nn.ReLU())
             in_dim = dim
 
         self.decoder_blocks.append(
-            self._create_linear_layer(
-                in_dim, self.act_size, normalize=True
-            )
+            self._create_linear_layer(in_dim, self.act_size, normalize=True)
         )
 
     def _init_params(self):
@@ -128,16 +120,20 @@ class DeepSAE(nn.Module):
         # Get the decoder linear layers.
         # Note that in _init_decoder_params, we add linear layers interleaved with ReLU.
         # Extract only the Linear modules.
-        decoder_linears = [module for module in self.decoder_blocks if isinstance(module, nn.Linear)]
+        decoder_linears = [
+            module for module in self.decoder_blocks if isinstance(module, nn.Linear)
+        ]
 
         # Pair layers until either encoder or decoder runs out
         # Last encoder layer pairs with first decoder layer, etc.
         num_pairs = min(len(encoder_linears), len(decoder_linears))
         for i in range(num_pairs):
-            enc_layer = encoder_linears[-(i+1)]  # Start from last encoder
-            dec_layer = decoder_linears[i]        # Start from first decoder
+            enc_layer = encoder_linears[-(i + 1)]  # Start from last encoder
+            dec_layer = decoder_linears[i]  # Start from first decoder
             dec_layer.weight.data.copy_(enc_layer.weight.data.t())
-            dec_layer.weight.data = dec_layer.weight.data / dec_layer.weight.data.norm(dim=-1, keepdim=True)
+            dec_layer.weight.data = dec_layer.weight.data / dec_layer.weight.data.norm(
+                dim=-1, keepdim=True
+            )
 
     def start_act_stat_tracking(self):
         """
@@ -151,9 +147,7 @@ class DeepSAE(nn.Module):
         self.mse_sum = 0.0
         self.mse_count = 0
 
-    def _create_linear_layer(
-        self, in_dim, out_dim, normalize=False
-    ):
+    def _create_linear_layer(self, in_dim, out_dim, normalize=False):
         layer = nn.Linear(in_dim, out_dim)
         nn.init.kaiming_normal_(layer.weight)
         if normalize:
@@ -179,7 +173,9 @@ class DeepSAE(nn.Module):
                 resid = block(resid)
 
         resid = feature_acts = self.sparse_encoder_block(resid)
-        assert ((feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)).all()
+        assert (
+            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
+        ).all()
 
         for block in self.decoder_blocks:
             resid = block(resid)

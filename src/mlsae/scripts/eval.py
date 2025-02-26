@@ -42,9 +42,7 @@ acts = generate_acts_from_tokens(llm, tokens, device)
 acts = preprocess_acts(acts)
 
 for arch in list(arch_to_model_id.keys()):
-    sae = DeepSAE.load(
-        arch, load_from_s3=False, model_id=arch_to_model_id[arch]
-    ).eval()
+    sae = DeepSAE.load(arch, load_from_s3=False, model_id=arch_to_model_id[arch]).eval()
 
     sae.to(device)
 
