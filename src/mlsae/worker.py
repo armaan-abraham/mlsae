@@ -262,6 +262,9 @@ def task_train(
 
         act_freq_batch = (feature_acts > 0).float().mean(dim=0)
         act_freq_history += act_freq_batch
+        
+        # Calculate the average number of nonzero features per example in the batch
+        avg_nonzero_features = (feature_acts > 0).float().sum(dim=1).mean().item()
 
         # store step metrics
         baseline_mse = get_baseline_mse(acts)
@@ -271,6 +274,7 @@ def task_train(
             "mse": mse_loss.item(),
             "baseline_mse": baseline_mse.item(),
             "normalized_mse": (mse_loss / baseline_mse).item(),
+            "avg_nonzero_features": avg_nonzero_features,
         }
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
