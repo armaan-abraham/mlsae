@@ -10,7 +10,7 @@ class DeepSAE0(DeepSAE):
             decoder_dim_mults=[],
             name="SAE0",
             device=device,
-            topk=8,
-            act_decay=0,
             lr=2e-4,
+            act_decay=0,
+            topk=32,
         )

@@ -1,18 +1,16 @@
-from mlsae.model.rl_sae import RLSAE
+from mlsae.model.model import DeepSAE
 
 
-class DeepSAE1(RLSAE):
+class DeepSAE1(DeepSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[],
             sparse_dim_mult=8,
             decoder_dim_mults=[],
-            name="RL0",
+            name="SAE1",
             device=device,
             lr=2e-4,
-            rl_temperature=2,
-            num_samples=3,
-            L0_penalty=2e-1,
-            rl_loss_weight=2,
+            act_decay=0,
+            topk=64,
         )

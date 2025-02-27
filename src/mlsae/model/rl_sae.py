@@ -18,16 +18,21 @@ class RLFeatureSelector(nn.Module):
     based on probabilities from a sigmoid activation.
     """
 
-    def __init__(self, sparse_dim, temperature_initial=DEFAULT_TEMPERATURE_INITIAL, temperature_final=DEFAULT_TEMPERATURE_FINAL, L0_penalty=1e-2, num_samples=10, decay_half_life=DEFAULT_TEMPERATURE_DECAY_HALF_LIFE):
+    def __init__(self, sparse_dim, temperature_initial=DEFAULT_TEMPERATURE_INITIAL, temperature_final=DEFAULT_TEMPERATURE_FINAL, L0_penalty=1e-2, num_samples=10, decay_half_life=DEFAULT_TEMPERATURE_DECAY_HALF_LIFE, prob_bias=-4):
         super().__init__()
         self.sparse_dim = sparse_dim
         self.temperature_initial = temperature_initial
         self.temperature_final = temperature_final
         self.temperature = temperature_initial  # Current temperature
         self.L0_penalty = L0_penalty
-        self.feature_scales = nn.Parameter(torch.ones(sparse_dim))
         self.num_samples = num_samples
         self.decay_half_life = decay_half_life
+        self.prob_bias = prob_bias
+
+        # Separate biases for magnitude and selection paths
+        self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
+        self.selection_bias = nn.Parameter(torch.zeros(sparse_dim))
+        self.feature_scales = nn.Parameter(torch.ones(sparse_dim))
 
     def get_current_temperature(self, iteration):
         """Calculate the current temperature based on training iteration"""
@@ -43,7 +48,8 @@ class RLFeatureSelector(nn.Module):
     def get_probs(self, x):
         """Get activation probabilities from raw encoder outputs"""
         assert self.temperature > 0, f"Temperature must be greater than 0, got {self.temperature}"
-        return torch.sigmoid(x / self.temperature)
+        # Add selection bias to inputs for the probability calculation
+        return torch.sigmoid((x + self.selection_bias) / self.temperature + self.prob_bias)
 
     def sample_mask(self, probs):
         """Sample a binary mask from probabilities"""
@@ -53,7 +59,8 @@ class RLFeatureSelector(nn.Module):
         """During inference, just use deterministic threshold"""
         probs = self.get_probs(x)
         mask = (probs > 0.5).float()
-        magnitudes = F.relu(x)
+        # Apply magnitude bias for the feature values
+        magnitudes = F.relu(x + self.magnitude_bias)
         output = magnitudes * mask * self.feature_scales.unsqueeze(0)
         return output
 
@@ -73,7 +80,8 @@ class RLFeatureSelector(nn.Module):
 
     def apply_mask(self, x, mask):
         """Apply a specific mask to the input"""
-        magnitudes = F.relu(x)
+        # Apply magnitude bias for the feature values
+        magnitudes = F.relu(x + self.magnitude_bias)
         output = magnitudes * mask * self.feature_scales.unsqueeze(0)
         return output
 
@@ -120,6 +128,7 @@ class RLSAE(DeepSAE):
         num_samples: int = 3,
         L0_penalty: float = 1e-2,
         rl_loss_weight: float = 1.0,
+        prob_bias: float = -4,
 
         temperature_initial: float = DEFAULT_TEMPERATURE_INITIAL,
         temperature_final: float = DEFAULT_TEMPERATURE_FINAL,
@@ -130,6 +139,7 @@ class RLSAE(DeepSAE):
         self.temperature_initial = temperature_initial
         self.temperature_final = temperature_final
         self.temperature_decay_half_life = temperature_decay_half_life
+        self.prob_bias = prob_bias
 
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
@@ -156,8 +166,9 @@ class RLSAE(DeepSAE):
             )
             in_dim = dim
 
+        # Create linear layer without bias
         self.sparse_encoder_block = torch.nn.Sequential(
-            self._create_linear_layer(in_dim, self.sparse_dim),
+            self._create_linear_layer_no_bias(in_dim, self.sparse_dim),
         )
 
         self.rl_selector = RLFeatureSelector(
@@ -167,7 +178,14 @@ class RLSAE(DeepSAE):
             L0_penalty=self.L0_penalty,
             num_samples=self.num_samples,
             decay_half_life=self.temperature_decay_half_life,
+            prob_bias=self.prob_bias,
         )
+
+    def _create_linear_layer_no_bias(self, in_dim, out_dim):
+        """Create a linear layer without bias"""
+        layer = nn.Linear(in_dim, out_dim, bias=False)
+        nn.init.kaiming_normal_(layer.weight)
+        return layer
 
     def _encode_up_to_selection(self, x):
         resid = x
@@ -182,6 +200,7 @@ class RLSAE(DeepSAE):
             resid = block(resid)
         return resid
 
+    @torch.no_grad()
     def _evaluate_masks(self, x, sparse_features, masks):
         """
         Evaluate per-sample losses for each mask.
@@ -222,6 +241,7 @@ class RLSAE(DeepSAE):
 
         if self.training:
             masks = self.rl_selector.sample_masks(sparse_features)
+
             # Evaluate each mask's per-sample loss
             per_sample_losses = self._evaluate_masks(x, sparse_features, masks)
             # per_sample_losses shape: [num_samples, batch_size]
@@ -293,10 +313,13 @@ class RLSAE(DeepSAE):
         nn.init.kaiming_normal_(new_W_enc)
         nn.init.kaiming_normal_(new_W_dec)
 
-        new_b_enc = torch.zeros_like(self.sparse_encoder_block[0].bias)
+        # Reset magnitude and selection biases
+        new_magnitude_bias = torch.zeros_like(self.rl_selector.magnitude_bias)
+        new_selection_bias = torch.zeros_like(self.rl_selector.selection_bias)
 
         self.sparse_encoder_block[0].weight.data[idx] = new_W_enc[idx]
-        self.sparse_encoder_block[0].bias.data[idx] = new_b_enc[idx]
+        self.rl_selector.magnitude_bias.data[idx] = new_magnitude_bias[idx]
+        self.rl_selector.selection_bias.data[idx] = new_selection_bias[idx]
         self.decoder_blocks[0].weight.data[:, idx] = new_W_dec[:, idx]
 
         self.rl_selector.feature_scales.data[idx] = 1.0
@@ -311,6 +334,7 @@ class RLSAE(DeepSAE):
                 "L0_penalty": self.rl_selector.L0_penalty,
                 "num_samples": self.rl_selector.num_samples,
                 "rl_loss_weight": self.rl_loss_weight,
+                "prob_bias": self.rl_selector.prob_bias,
             }
         )
         return config
