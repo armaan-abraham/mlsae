@@ -85,16 +85,14 @@ class RLFeatureSelector(nn.Module):
         output = magnitudes * mask * self.feature_scales.unsqueeze(0)
         return output
 
-    def update_selector(self, best_masks):
+    def update_selector(self, best_masks, normalized_rewards=None):
         """
         Update the selector to increase probability of selecting the best mask.
         best_masks: [batch_size, sparse_dim]
+        normalized_rewards: [batch_size] - optional reward scaling factors
         """
         if not hasattr(self, "saved_probs"):
             return 0.0
-
-        # self.saved_probs: [batch_size, sparse_dim]
-        # best_masks: [batch_size, sparse_dim]
 
         # Calculate log-probabilities for each sample's best mask
         # shape [batch_size, sparse_dim]
@@ -102,6 +100,12 @@ class RLFeatureSelector(nn.Module):
             torch.log(self.saved_probs + 1e-8) * best_masks
             + torch.log(1 - self.saved_probs + 1e-8) * (1 - best_masks)
         )
+
+        # If normalized rewards are provided, use them to scale the log probabilities
+        if normalized_rewards is not None:
+            # Reshape for broadcasting: [batch_size, 1]
+            scale_factors = normalized_rewards.unsqueeze(1)
+            log_probs = log_probs * scale_factors
 
         # Mean over batch and features
         selector_loss = -log_probs.mean()
@@ -203,15 +207,15 @@ class RLSAE(DeepSAE):
     @torch.no_grad()
     def _evaluate_masks(self, x, sparse_features, masks):
         """
-        Evaluate per-sample losses for each mask.
+        Evaluate per-sample rewards for each mask.
         masks: [num_samples, batch_size, sparse_dim]
-        Returns a tensor of shape [num_samples, batch_size]
-        with the total loss per sample for each mask.
+        Returns rewards: tensor of shape [num_samples, batch_size] 
+        with the reward (negative loss) per sample for each mask.
         """
         batch_size = x.shape[0]
 
-        # We'll accumulate a loss for each sample, for each mask
-        all_losses = []
+        # We'll accumulate rewards for each sample, for each mask
+        all_rewards = []
 
         for i in range(masks.shape[0]):
             mask_i = masks[i]  # shape [batch_size, sparse_dim]
@@ -225,12 +229,12 @@ class RLSAE(DeepSAE):
             # sum of active features per sample, times L0 penalty
             sparsity_penalty_per_sample = mask_i.sum(dim=1) * self.L0_penalty
 
-            # Combine losses per sample
-            total_loss_per_sample = mse_loss_per_sample + sparsity_penalty_per_sample
-            all_losses.append(total_loss_per_sample)
+            # Combine losses per sample and convert to reward (negative loss)
+            total_reward_per_sample = -(mse_loss_per_sample + sparsity_penalty_per_sample)
+            all_rewards.append(total_reward_per_sample)
 
         # Stack into shape [num_samples, batch_size]
-        return torch.stack(all_losses, dim=0)
+        return torch.stack(all_rewards, dim=0)
 
     def _forward(self, x, iteration=None):
         sparse_features = self._encode_up_to_selection(x)
@@ -242,12 +246,12 @@ class RLSAE(DeepSAE):
         if self.training:
             masks = self.rl_selector.sample_masks(sparse_features)
 
-            # Evaluate each mask's per-sample loss
-            per_sample_losses = self._evaluate_masks(x, sparse_features, masks)
-            # per_sample_losses shape: [num_samples, batch_size]
+            # Evaluate each mask's per-sample reward
+            per_sample_rewards = self._evaluate_masks(x, sparse_features, masks)
+            # per_sample_rewards shape: [num_samples, batch_size]
 
-            # For each sample, pick the mask that yields minimal loss
-            best_indices = per_sample_losses.argmin(dim=0)  # [batch_size]
+            # For each sample, pick the mask that yields maximum reward
+            best_indices = per_sample_rewards.argmax(dim=0)  # [batch_size]
 
             # Gather the best mask for each sample
             batch_size = x.shape[0]
@@ -255,14 +259,25 @@ class RLSAE(DeepSAE):
 
             # Apply best masks and get final reconstruction
             best_feature_acts = self.rl_selector.apply_mask(sparse_features, best_masks)
-
             best_reconstructed = self._decode(best_feature_acts)
 
             # Compute the final batch-averaged MSE loss
             mse_loss = (best_reconstructed - x).pow(2).mean()
+            
+            # Calculate normalized rewards for each input
+            # Extract best rewards for each input
+            best_rewards = per_sample_rewards[best_indices, torch.arange(batch_size)]  # [batch_size]
+            
+            # Compute mean and std of rewards across masks for each input
+            reward_means = per_sample_rewards.mean(dim=0)  # [batch_size]
+            reward_stds = per_sample_rewards.std(dim=0)  # [batch_size]
+            
+            # Add epsilon to avoid division by zero
+            eps = 1e-8
+            normalized_rewards = (best_rewards - reward_means) / (reward_stds + eps)
 
-            # RL update: encourage selector to pick the best masks
-            selector_loss = self.rl_selector.update_selector(best_masks)
+            # RL update: encourage selector to pick the best masks with normalized rewards
+            selector_loss = self.rl_selector.update_selector(best_masks, normalized_rewards)
             weighted_selector_loss = selector_loss * self.rl_loss_weight
             final_loss = mse_loss + weighted_selector_loss
 
