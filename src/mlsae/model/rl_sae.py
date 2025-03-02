@@ -85,31 +85,44 @@ class RLFeatureSelector(nn.Module):
         output = magnitudes * mask * self.feature_scales.unsqueeze(0)
         return output
 
-    def update_selector(self, best_masks, normalized_rewards=None):
+    def update_selector(self, masks, rewards):
         """
-        Update the selector to increase probability of selecting the best mask.
-        best_masks: [batch_size, sparse_dim]
-        normalized_rewards: [batch_size] - optional reward scaling factors
+        Update the selector using all masks, weighted by their rewards.
+        masks: [num_samples, batch_size, sparse_dim] - all sampled masks
+        rewards: [num_samples, batch_size] - rewards for each mask
         """
         if not hasattr(self, "saved_probs"):
             return 0.0
 
-        # Calculate log-probabilities for each sample's best mask
-        # shape [batch_size, sparse_dim]
+        num_samples, batch_size, _ = masks.shape
+        
+        # Normalize rewards across samples for each batch item
+        reward_means = rewards.mean(dim=0, keepdim=True)  # [1, batch_size]
+        reward_stds = rewards.std(dim=0, keepdim=True) + 1e-8  # [1, batch_size]
+        normalized_rewards = (rewards - reward_means) / reward_stds  # [num_samples, batch_size]
+        
+        # Expand probs for all samples
+        # [batch_size, sparse_dim] -> [num_samples, batch_size, sparse_dim]
+        expanded_probs = self.saved_probs.unsqueeze(0).expand(num_samples, -1, -1)
+        
+        # Calculate log-probabilities for all masks
+        # [num_samples, batch_size, sparse_dim]
         log_probs = (
-            torch.log(self.saved_probs + 1e-8) * best_masks
-            + torch.log(1 - self.saved_probs + 1e-8) * (1 - best_masks)
+            torch.log(expanded_probs + 1e-8) * masks
+            + torch.log(1 - expanded_probs + 1e-8) * (1 - masks)
         )
-
-        # If normalized rewards are provided, use them to scale the log probabilities
-        if normalized_rewards is not None:
-            # Reshape for broadcasting: [batch_size, 1]
-            scale_factors = normalized_rewards.unsqueeze(1)
-            log_probs = log_probs * scale_factors
-
-        # Mean over batch and features
-        selector_loss = -log_probs.mean()
-
+        
+        # Sum log probs across features for each sample and batch item
+        # [num_samples, batch_size]
+        log_probs_sum = log_probs.sum(dim=2)
+        
+        # Weight by normalized rewards and negate for loss
+        # [num_samples, batch_size]
+        weighted_log_probs = log_probs_sum * normalized_rewards
+        
+        # Mean over all samples and batch items
+        selector_loss = -weighted_log_probs.mean()
+        
         return selector_loss
 
 
@@ -264,20 +277,8 @@ class RLSAE(DeepSAE):
             # Compute the final batch-averaged MSE loss
             mse_loss = (best_reconstructed - x).pow(2).mean()
             
-            # Calculate normalized rewards for each input
-            # Extract best rewards for each input
-            best_rewards = per_sample_rewards[best_indices, torch.arange(batch_size)]  # [batch_size]
-            
-            # Compute mean and std of rewards across masks for each input
-            reward_means = per_sample_rewards.mean(dim=0)  # [batch_size]
-            reward_stds = per_sample_rewards.std(dim=0)  # [batch_size]
-            
-            # Add epsilon to avoid division by zero
-            eps = 1e-8
-            normalized_rewards = (best_rewards - reward_means) / (reward_stds + eps)
-
-            # RL update: encourage selector to pick the best masks with normalized rewards
-            selector_loss = self.rl_selector.update_selector(best_masks, normalized_rewards)
+            # RL update: use all masks weighted by their rewards
+            selector_loss = self.rl_selector.update_selector(masks, per_sample_rewards)
             weighted_selector_loss = selector_loss * self.rl_loss_weight
             final_loss = mse_loss + weighted_selector_loss
 
