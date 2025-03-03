@@ -17,5 +17,5 @@ class DeepSAE12(RLSAE):
             L0_penalty=5e-6,
             rl_loss_weight=5e-4,
             prob_bias=-4,
-            prob_deadness_penalty=1e-2,
+            prob_deadness_penalty=16,
         )
