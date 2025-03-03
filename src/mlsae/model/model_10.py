@@ -16,5 +16,6 @@ class DeepSAE10(RLSAE):
             num_samples=5,
             L0_penalty=5e-6,
             rl_loss_weight=5e-4,
-            prob_bias=-3,
+            prob_bias=-4,
+            prob_deadness_penalty=1e-4,
         )

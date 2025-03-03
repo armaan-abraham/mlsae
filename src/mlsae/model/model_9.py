@@ -15,6 +15,7 @@ class DeepSAE9(RLSAE):
             temperature_final=1,
             num_samples=5,
             L0_penalty=5e-6,
-            rl_loss_weight=2e-4,
+            rl_loss_weight=5e-4,
             prob_bias=-4,
+            prob_deadness_penalty=1e-5,
         )
