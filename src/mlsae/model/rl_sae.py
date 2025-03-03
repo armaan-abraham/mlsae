@@ -18,7 +18,7 @@ class RLFeatureSelector(nn.Module):
     based on probabilities from a sigmoid activation.
     """
 
-    def __init__(self, sparse_dim, temperature_initial=DEFAULT_TEMPERATURE_INITIAL, temperature_final=DEFAULT_TEMPERATURE_FINAL, L0_penalty=1e-2, num_samples=10, decay_half_life=DEFAULT_TEMPERATURE_DECAY_HALF_LIFE, prob_bias=-4):
+    def __init__(self, sparse_dim, temperature_initial=DEFAULT_TEMPERATURE_INITIAL, temperature_final=DEFAULT_TEMPERATURE_FINAL, L0_penalty=1e-2, num_samples=10, decay_half_life=DEFAULT_TEMPERATURE_DECAY_HALF_LIFE, prob_bias=-4, prob_deadness_penalty=0.1):
         super().__init__()
         self.sparse_dim = sparse_dim
         self.temperature_initial = temperature_initial
@@ -28,6 +28,7 @@ class RLFeatureSelector(nn.Module):
         self.num_samples = num_samples
         self.decay_half_life = decay_half_life
         self.prob_bias = prob_bias
+        self.prob_deadness_penalty = prob_deadness_penalty
 
         # Separate biases for magnitude and selection paths
         self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
@@ -123,6 +124,16 @@ class RLFeatureSelector(nn.Module):
         # Mean over all samples and batch items
         selector_loss = -weighted_log_probs.mean()
         
+        # Calculate mean probability for each feature across the batch
+        mean_probs_per_feature = self.saved_probs.mean(dim=0)  # [sparse_dim]
+        # Apply -log10 to penalize very low average probabilities
+        neg_log10_mean_probs = -torch.log10(mean_probs_per_feature)
+        # Take the mean across all features
+        deadness_penalty = neg_log10_mean_probs.mean() * self.prob_deadness_penalty
+        
+        # Add to selector loss
+        selector_loss = selector_loss + deadness_penalty
+        
         return selector_loss
 
 
@@ -146,6 +157,7 @@ class RLSAE(DeepSAE):
         L0_penalty: float = 1e-2,
         rl_loss_weight: float = 1.0,
         prob_bias: float = -4,
+        prob_deadness_penalty: float = 0.1,
 
         temperature_initial: float = DEFAULT_TEMPERATURE_INITIAL,
         temperature_final: float = DEFAULT_TEMPERATURE_FINAL,
@@ -157,6 +169,7 @@ class RLSAE(DeepSAE):
         self.temperature_final = temperature_final
         self.temperature_decay_half_life = temperature_decay_half_life
         self.prob_bias = prob_bias
+        self.prob_deadness_penalty = prob_deadness_penalty
 
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
@@ -196,6 +209,7 @@ class RLSAE(DeepSAE):
             num_samples=self.num_samples,
             decay_half_life=self.temperature_decay_half_life,
             prob_bias=self.prob_bias,
+            prob_deadness_penalty=self.prob_deadness_penalty,
         )
 
     def _create_linear_layer_no_bias(self, in_dim, out_dim):
@@ -351,6 +365,7 @@ class RLSAE(DeepSAE):
                 "num_samples": self.rl_selector.num_samples,
                 "rl_loss_weight": self.rl_loss_weight,
                 "prob_bias": self.rl_selector.prob_bias,
+                "prob_deadness_penalty": self.rl_selector.prob_deadness_penalty,
             }
         )
         return config
