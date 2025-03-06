@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mlsae.model.model import DeepSAE
+from mlsae.model.model import ExperimentSAEBase
 from mlsae.config import DTYPES
 import logging
 
@@ -137,7 +137,7 @@ class RLFeatureSelector(nn.Module):
         return selector_loss
 
 
-class RLSAE(DeepSAE):
+class RLSAE(ExperimentSAEBase):
     """
     A Sparse Autoencoder that uses a sample-and-select-best approach
     for feature selection.
@@ -149,7 +149,6 @@ class RLSAE(DeepSAE):
         encoder_dim_mults: list[float],
         sparse_dim_mult: float,
         decoder_dim_mults: list[float],
-        name: str = None,
         enc_dtype: str = "fp32",
         device: str = "cpu",
         lr: float = 1e-4,
@@ -178,7 +177,6 @@ class RLSAE(DeepSAE):
             encoder_dim_mults=encoder_dim_mults,
             sparse_dim_mult=sparse_dim_mult,
             decoder_dim_mults=decoder_dim_mults,
-            name=name,
             enc_dtype=enc_dtype,
             device=device,
             topk=-1,

@@ -14,5 +14,7 @@ for name, obj in list(locals().items()):
     if (name.startswith("ExperimentSAE") and 
         inspect.isclass(obj) and 
         issubclass(obj, DeepSAE) and
-        obj is not DeepSAE):
+        obj is not DeepSAE and
+        obj is not ExperimentSAEBase
+        ):
         models.append(obj)

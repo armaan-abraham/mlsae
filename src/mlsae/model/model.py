@@ -498,3 +498,21 @@ class SparseAdam(torch.optim.Optimizer):
                     state["step"].copy_(other.state[p_other]["step"])
                     state["exp_avg"].copy_(other.state[p_other]["exp_avg"])
                     state["exp_avg_sq"].copy_(other.state[p_other]["exp_avg_sq"])
+
+
+class ExperimentSAEBase(DeepSAE):
+    """Base class for all experimental SAE models.
+    Automatically extracts the name from the class name (text after 'ExperimentSAE').
+    """
+    def __init__(self, *args, **kwargs):
+        print(args, kwargs)
+        # Extract model name from class name (e.g., ExperimentSAE0 -> "0")
+        class_name = self.__class__.__name__
+        model_name = class_name[len("ExperimentSAE"):]
+        
+        # Pass this to the parent class
+        super().__init__(
+            *args,
+            name=model_name,
+            **kwargs
+        )
