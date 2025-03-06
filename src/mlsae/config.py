@@ -42,7 +42,7 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    num_tokens: int = int(1e10)
+    num_tokens: int = int(7.5e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = True
