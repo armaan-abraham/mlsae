@@ -54,7 +54,7 @@ class ExperimentSAERL2(RLSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[],
-            sparse_dim_mult=32,
+            sparse_dim_mult=8,
             decoder_dim_mults=[],
             device=device,
             lr=5e-4,
@@ -72,7 +72,7 @@ class ExperimentSAERL3(RLSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[],
-            sparse_dim_mult=32,
+            sparse_dim_mult=8,
             decoder_dim_mults=[],
             device=device,
             lr=5e-4,
@@ -91,7 +91,7 @@ class ExperimentSAERL4(RLSAE):
             act_size=act_size,
             device=device,
             encoder_dim_mults=[],
-            sparse_dim_mult=32,
+            sparse_dim_mult=8,
             decoder_dim_mults=[],
             lr=5e-4,
             temperature_initial=1,
@@ -184,7 +184,7 @@ class ExperimentSAETop16InflateNeg5(ActInflationSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
@@ -198,7 +198,7 @@ class ExperimentSAETop16InflateNeg4(ActInflationSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
@@ -212,7 +212,7 @@ class ExperimentSAETop16InflateNeg3(ActInflationSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
@@ -226,7 +226,7 @@ class ExperimentSAETop16InflateNeg2(ActInflationSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
@@ -240,7 +240,7 @@ class ExperimentSAETop16InflateNeg1(ActInflationSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
@@ -254,7 +254,7 @@ class ExperimentSAETop16Inflate0(ActInflationSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
@@ -268,7 +268,7 @@ class ExperimentSAETop16Inflate1(ActInflationSAE):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
