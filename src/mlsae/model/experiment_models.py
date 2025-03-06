@@ -66,6 +66,21 @@ class ActInflationSAE(ExperimentSAEBase):
             "act_inflation_loss": act_inflation_loss,
         }
 
+
+class ExperimentSAEInflate_2x2_0(ActInflationSAE):
+    def __init__(self, act_size: int, device: str = "cpu"):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[2],
+            sparse_dim_mult=32,
+            decoder_dim_mults=[2],
+            device=device,
+            lr=2e-4,
+            topk=128,
+            act_inflate=0,
+            act_decay=0,
+        )
+
 class ExperimentSAEInflate_2x2_1eNeg8(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
