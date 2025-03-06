@@ -1,4 +1,3 @@
-from mlsae.model.rl_sae import RLSAE
 from mlsae.model.model import ExperimentSAEBase
 import torch
 import torch.nn as nn
