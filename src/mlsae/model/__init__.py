@@ -1,17 +1,18 @@
 import importlib
-import pkgutil
-import re
+import inspect
 from pathlib import Path
 
 # Import base classes that should always be available
 from mlsae.model.model import DeepSAE, SparseAdam, TopKActivation
 
-# Dynamically import all model classes
+# Import experimental models
+from mlsae.model.experiment_models import *
+
+# Collect all experimental models (classes that start with ExperimentSAE)
 models = []
-package_dir = Path(__file__).parent
-for module_info in pkgutil.iter_modules([str(package_dir)]):
-    if match := re.match(r"model_(\d+)$", module_info.name):
-        module = importlib.import_module(f"mlsae.model.{module_info.name}")
-        class_name = f"DeepSAE{match.group(1)}"
-        if hasattr(module, class_name):
-            models.append(getattr(module, class_name))
+for name, obj in list(locals().items()):
+    if (name.startswith("ExperimentSAE") and 
+        inspect.isclass(obj) and 
+        issubclass(obj, DeepSAE) and
+        obj is not DeepSAE):
+        models.append(obj)
