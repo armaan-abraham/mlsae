@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 
-class ActSqueezeSAE(ExperimentSAEBase):
+class LayerNormActSqueezeSAE(ExperimentSAEBase):
     def __init__(self, act_size: int, *args, act_squeeze: float = 1, **kwargs):
         assert kwargs.get("act_decay", 0) == 0, "ActInflationSAE does not support act_decay"
         super().__init__(
@@ -12,6 +12,23 @@ class ActSqueezeSAE(ExperimentSAEBase):
             **kwargs
         )
         self.act_squeeze = act_squeeze
+
+    def _init_encoder_params(self):
+        self.dense_encoder_blocks = torch.nn.ModuleList()
+        in_dim = self.act_size
+
+        for dim in self.encoder_dims:
+            linear_layer = self._create_linear_layer(in_dim, dim)
+            self.dense_encoder_blocks.append(
+                torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim))
+            )
+            in_dim = dim
+
+        self.sparse_encoder_block = torch.nn.Sequential(
+            self._create_linear_layer(in_dim, self.sparse_dim),
+            nn.ReLU(),
+            TopKActivation(self.topk),
+        )
 
     def _forward(self, x, iteration=None):
         # Encode
@@ -63,44 +80,44 @@ class ActSqueezeSAE(ExperimentSAEBase):
             "act_squeeze_loss": act_squeeze_loss,
         }
 
-class ExperimentSAE2x2LayernormSqueeze1eNeg4(ActSqueezeSAE):
+class ExperimentSAE2x2LayernormSqueeze1eNeg5lr4eNeg4(LayerNormActSqueezeSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=16,
+            sparse_dim_mult=32,
             decoder_dim_mults=[2],
             device=device,
-            lr=2e-4,
-            topk=64,
+            lr=4e-4,
+            topk=128,
+            act_squeeze=1e-5,
+            act_decay=0,
+        )
+
+class ExperimentSAE2x2LayernormSqueeze1eNeg4lr8eNeg4(LayerNormActSqueezeSAE):
+    def __init__(self, act_size: int, device: str = "cpu"):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[2],
+            sparse_dim_mult=32,
+            decoder_dim_mults=[2],
+            device=device,
+            lr=8e-4,
+            topk=128,
             act_squeeze=1e-4,
             act_decay=0,
         )
-    
-    def _init_encoder_params(self):
-        self.dense_encoder_blocks = torch.nn.ModuleList()
-        in_dim = self.act_size
 
-        for dim in self.encoder_dims:
-            linear_layer = self._create_linear_layer(in_dim, dim)
-            self.dense_encoder_blocks.append(
-                torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim))
-            )
-            in_dim = dim
-
-        self.sparse_encoder_block = torch.nn.Sequential(
-            self._create_linear_layer(in_dim, self.sparse_dim),
-            nn.ReLU(),
-            TopKActivation(self.topk),
+class ExperimentSAE2x2LayernormSqueeze1eNeg4lr4eNeg4(LayerNormActSqueezeSAE):
+    def __init__(self, act_size: int, device: str = "cpu"):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[2],
+            sparse_dim_mult=32,
+            decoder_dim_mults=[2],
+            device=device,
+            lr=4e-4,
+            topk=128,
+            act_squeeze=1e-4,
+            act_decay=0,
         )
-
-class ExperimentSAE2x2LayernormSqueeze1eNeg5(ExperimentSAE2x2LayernormSqueeze1eNeg4):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(act_size, device)
-        self.act_squeeze = 1e-5
-
-
-class ExperimentSAE2x2LayernormSqueeze1eNeg6(ExperimentSAE2x2LayernormSqueeze1eNeg4):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(act_size, device)
-        self.act_squeeze = 1e-6
