@@ -19,6 +19,7 @@ class ActSqueezeSAE(ExperimentSAEBase):
         if self.encoder_dims:
             for block in self.dense_encoder_blocks:
                 resid = block(resid)
+            resid = resid / torch.sqrt(torch.tensor(resid.shape[1]))
         
         # Access pre-topk activations from sparse_encoder_block
         # sparse_encoder_block is Sequential(Linear, ReLU, TopKActivation)
@@ -62,7 +63,7 @@ class ActSqueezeSAE(ExperimentSAEBase):
             "act_squeeze_loss": act_squeeze_loss,
         }
 
-class ExperimentSAE2x2LayernormSqueeze1eNeg3(ActSqueezeSAE):
+class ExperimentSAE2x2LayernormSqueeze1eNeg4(ActSqueezeSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -72,7 +73,7 @@ class ExperimentSAE2x2LayernormSqueeze1eNeg3(ActSqueezeSAE):
             device=device,
             lr=2e-4,
             topk=64,
-            act_squeeze=1e-3,
+            act_squeeze=1e-4,
             act_decay=0,
         )
     
@@ -93,13 +94,13 @@ class ExperimentSAE2x2LayernormSqueeze1eNeg3(ActSqueezeSAE):
             TopKActivation(self.topk),
         )
 
-class ExperimentSAE2x2LayernormSqueeze1eNeg2(ExperimentSAE2x2LayernormSqueeze1eNeg3):
+class ExperimentSAE2x2LayernormSqueeze1eNeg5(ExperimentSAE2x2LayernormSqueeze1eNeg4):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(act_size, device)
-        self.act_squeeze = 1e-2
+        self.act_squeeze = 1e-5
 
 
-class ExperimentSAE2x2LayernormSqueeze1eNeg1(ExperimentSAE2x2LayernormSqueeze1eNeg3):
+class ExperimentSAE2x2LayernormSqueeze1eNeg6(ExperimentSAE2x2LayernormSqueeze1eNeg4):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(act_size, device)
-        self.act_squeeze = 1e-1
+        self.act_squeeze = 1e-6
