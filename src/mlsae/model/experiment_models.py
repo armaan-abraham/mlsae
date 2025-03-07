@@ -80,20 +80,6 @@ class ExperimentSAEInflate_2x2_0(ActInflationSAE):
             act_decay=0,
         )
 
-class ExperimentSAEInflate_2x2_1eNeg8(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=1e-8,
-            act_decay=0,
-        )
-
 class ExperimentSAEInflate_2x2_2eNeg8(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
@@ -105,20 +91,6 @@ class ExperimentSAEInflate_2x2_2eNeg8(ActInflationSAE):
             lr=2e-4,
             topk=128,
             act_inflate=2e-8,
-            act_decay=0,
-        )
-
-class ExperimentSAEInflate_2x2_4eNeg8(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=4e-8,
             act_decay=0,
         )
 
@@ -136,20 +108,6 @@ class ExperimentSAEInflate_2x2_8eNeg8(ActInflationSAE):
             act_decay=0,
         )
 
-class ExperimentSAEInflate_2x2_16eNeg8(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=16e-8,
-            act_decay=0,
-        )
-
 class ExperimentSAEInflate_2x2_32eNeg8(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
@@ -164,30 +122,58 @@ class ExperimentSAEInflate_2x2_32eNeg8(ActInflationSAE):
             act_decay=0,
         )
 
-class ExperimentSAEInflate_2x2_64eNeg8(ActInflationSAE):
+class ExperimentSAEInflate_2x4x4x2_0(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[2],
+            encoder_dim_mults=[2, 4],
             sparse_dim_mult=32,
-            decoder_dim_mults=[2],
+            decoder_dim_mults=[4, 2],
             device=device,
             lr=2e-4,
             topk=128,
-            act_inflate=64e-8,
+            act_inflate=0,
             act_decay=0,
         )
 
-class ExperimentSAEInflate_2x2_128eNeg8(ActInflationSAE):
+class ExperimentSAEInflate_2x4x4x2_2eNeg8(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[2],
+            encoder_dim_mults=[2, 4],
             sparse_dim_mult=32,
-            decoder_dim_mults=[2],
+            decoder_dim_mults=[4, 2],
             device=device,
             lr=2e-4,
             topk=128,
-            act_inflate=128e-8,
+            act_inflate=2e-8,
+            act_decay=0,
+        )
+
+class ExperimentSAEInflate_2x4x4x2_8eNeg8(ActInflationSAE):
+    def __init__(self, act_size: int, device: str = "cpu"):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[2, 4],
+            sparse_dim_mult=32,
+            decoder_dim_mults=[4, 2],
+            device=device,
+            lr=2e-4,
+            topk=128,
+            act_inflate=8e-8,
+            act_decay=0,
+        )
+
+class ExperimentSAEInflate_2x4x4x2_32eNeg8(ActInflationSAE):
+    def __init__(self, act_size: int, device: str = "cpu"):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[2, 4],
+            sparse_dim_mult=32,
+            decoder_dim_mults=[4, 2],
+            device=device,
+            lr=2e-4,
+            topk=128,
+            act_inflate=32e-8,
             act_decay=0,
         )
