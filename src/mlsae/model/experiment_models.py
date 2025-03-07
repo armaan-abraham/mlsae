@@ -62,7 +62,7 @@ class ActSqueezeSAE(ExperimentSAEBase):
             "act_squeeze_loss": act_squeeze_loss,
         }
 
-class ExperimentSAE2x2Layernorm(ExperimentSAEBase):
+class ExperimentSAE2x2LayernormSqueeze1eNeg3(ActSqueezeSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -72,7 +72,7 @@ class ExperimentSAE2x2Layernorm(ExperimentSAEBase):
             device=device,
             lr=2e-4,
             topk=64,
-            eps=1e-2,
+            act_squeeze=1e-3,
             act_decay=0,
         )
     
@@ -93,30 +93,13 @@ class ExperimentSAE2x2Layernorm(ExperimentSAEBase):
             TopKActivation(self.topk),
         )
 
-class ExperimentSAE2x2Ctrl(ExperimentSAEBase):
+class ExperimentSAE2x2LayernormSqueeze1eNeg2(ExperimentSAE2x2LayernormSqueeze1eNeg3):
     def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=16,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=64,
-            eps=1e-2,
-            act_decay=0,
-        )
+        super().__init__(act_size, device)
+        self.act_squeeze = 1e-2
 
-class ExperimentSAE2x2Squeeze(ActSqueezeSAE):
+
+class ExperimentSAE2x2LayernormSqueeze1eNeg1(ExperimentSAE2x2LayernormSqueeze1eNeg3):
     def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=16,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=64,
-            act_squeeze=1e-3,
-            act_decay=0,
-        )
+        super().__init__(act_size, device)
+        self.act_squeeze = 1e-1
