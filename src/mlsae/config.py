@@ -25,7 +25,7 @@ class DataConfig:
     dataset_batch_size_entries: int = 50
 
     n_token_blocks: int = 5
-    n_act_blocks: int = 4
+    n_act_blocks: int = 1
 
     @property
     def act_block_size_tokens(self) -> int:

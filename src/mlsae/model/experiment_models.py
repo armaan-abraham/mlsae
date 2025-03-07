@@ -4,7 +4,7 @@ import torch.nn as nn
 
 
 class ActInflationSAE(ExperimentSAEBase):
-    def __init__(self, act_size: int, *args, act_inflate: float = 1, **kwargs):
+    def __init__(self, act_size: int, *args, act_inflate: float = 1, eps: float = 1e-1, **kwargs):
         assert kwargs.get("act_decay", 0) == 0, "ActInflationSAE does not support act_decay"
         super().__init__(
             act_size,
@@ -12,7 +12,7 @@ class ActInflationSAE(ExperimentSAEBase):
             **kwargs
         )
         self.act_inflate = act_inflate
-    
+        self.eps = eps
     def _forward(self, x, iteration=None):
         # Encode
         resid = x
@@ -31,12 +31,9 @@ class ActInflationSAE(ExperimentSAEBase):
         # Mean activation across batch for each feature
         mean_acts_per_feature = pre_topk_acts.mean(dim=0)
         
-        # Avoid log(0) by adding small epsilon
-        eps = 1e-8
-        log_mean_acts = torch.log(mean_acts_per_feature + eps)
+        rec = (mean_acts_per_feature + self.eps) ** -1
         
-        # Negative mean of log activations (encourage higher activations)
-        act_inflation_loss = -log_mean_acts.mean() * self.act_inflate
+        act_inflation_loss = rec.mean() * self.act_inflate
         
         # Continue with topk activation and the rest of the network
         feature_acts = self.sparse_encoder_block[2](relu_out)  # Apply TopK
@@ -65,36 +62,7 @@ class ActInflationSAE(ExperimentSAEBase):
             "act_inflation_loss": act_inflation_loss,
         }
 
-
-class ExperimentSAEInflate_2x2_0(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=0,
-            act_decay=0,
-        )
-
-class ExperimentSAEInflate_2x2_2eNeg8(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=2e-8,
-            act_decay=0,
-        )
-
-class ExperimentSAEInflate_2x2_8eNeg8(ActInflationSAE):
+class ExperimentSAEInflate_2x2_Eps1eNeg2(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -105,10 +73,11 @@ class ExperimentSAEInflate_2x2_8eNeg8(ActInflationSAE):
             lr=2e-4,
             topk=128,
             act_inflate=8e-8,
+            eps=1e-2,
             act_decay=0,
         )
 
-class ExperimentSAEInflate_2x2_32eNeg8(ActInflationSAE):
+class ExperimentSAEInflate_2x2_Eps1eNeg3(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -118,62 +87,22 @@ class ExperimentSAEInflate_2x2_32eNeg8(ActInflationSAE):
             device=device,
             lr=2e-4,
             topk=128,
-            act_inflate=32e-8,
+            act_inflate=8e-8,
+            eps=1e-3,
             act_decay=0,
         )
 
-class ExperimentSAEInflate_2x4x4x2_0(ActInflationSAE):
+class ExperimentSAEInflate_2x2_Eps1eNeg4(ActInflationSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[2, 4],
+            encoder_dim_mults=[2],
             sparse_dim_mult=32,
-            decoder_dim_mults=[4, 2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=0,
-            act_decay=0,
-        )
-
-class ExperimentSAEInflate_2x4x4x2_2eNeg8(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2, 4],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[4, 2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=2e-8,
-            act_decay=0,
-        )
-
-class ExperimentSAEInflate_2x4x4x2_8eNeg8(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2, 4],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[4, 2],
+            decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
             topk=128,
             act_inflate=8e-8,
-            act_decay=0,
-        )
-
-class ExperimentSAEInflate_2x4x4x2_32eNeg8(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2, 4],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[4, 2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=32e-8,
+            eps=1e-4,
             act_decay=0,
         )
