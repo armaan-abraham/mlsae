@@ -1,18 +1,18 @@
-from mlsae.model.model import ExperimentSAEBase
+from mlsae.model.model import ExperimentSAEBase, TopKActivation
 import torch
 import torch.nn as nn
 
 
-class ActInflationSAE(ExperimentSAEBase):
-    def __init__(self, act_size: int, *args, act_inflate: float = 1, eps: float = 1e-1, **kwargs):
+class ActSqueezeSAE(ExperimentSAEBase):
+    def __init__(self, act_size: int, *args, act_squeeze: float = 1, **kwargs):
         assert kwargs.get("act_decay", 0) == 0, "ActInflationSAE does not support act_decay"
         super().__init__(
             act_size,
             *args,
             **kwargs
         )
-        self.act_inflate = act_inflate
-        self.eps = eps
+        self.act_squeeze = act_squeeze
+
     def _forward(self, x, iteration=None):
         # Encode
         resid = x
@@ -31,9 +31,9 @@ class ActInflationSAE(ExperimentSAEBase):
         # Mean activation across batch for each feature
         mean_acts_per_feature = pre_topk_acts.mean(dim=0)
         
-        rec = (mean_acts_per_feature + self.eps) ** -1
+        mean_acts_std = mean_acts_per_feature.std()
         
-        act_inflation_loss = rec.mean() * self.act_inflate
+        act_squeeze_loss = mean_acts_std * self.act_squeeze
         
         # Continue with topk activation and the rest of the network
         feature_acts = self.sparse_encoder_block[2](relu_out)  # Apply TopK
@@ -52,57 +52,71 @@ class ActInflationSAE(ExperimentSAEBase):
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
         
         # No act_mag_loss since act_decay=0
-        loss = mse_loss + act_inflation_loss
+        loss = mse_loss + act_squeeze_loss
 
         return {
             "loss": loss,
             "mse_loss": mse_loss,
             "feature_acts": feature_acts,
             "reconstructed": reconstructed,
-            "act_inflation_loss": act_inflation_loss,
+            "act_squeeze_loss": act_squeeze_loss,
         }
 
-class ExperimentSAEInflate_2x2_Eps1eNeg2(ActInflationSAE):
+class ExperimentSAE2x2Layernorm(ExperimentSAEBase):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
-            topk=128,
-            act_inflate=8e-8,
+            topk=64,
+            eps=1e-2,
+            act_decay=0,
+        )
+    
+    def _init_encoder_params(self):
+        self.dense_encoder_blocks = torch.nn.ModuleList()
+        in_dim = self.act_size
+
+        for dim in self.encoder_dims:
+            linear_layer = self._create_linear_layer(in_dim, dim)
+            self.dense_encoder_blocks.append(
+                torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim))
+            )
+            in_dim = dim
+
+        self.sparse_encoder_block = torch.nn.Sequential(
+            self._create_linear_layer(in_dim, self.sparse_dim),
+            nn.ReLU(),
+            TopKActivation(self.topk),
+        )
+
+class ExperimentSAE2x2Ctrl(ExperimentSAEBase):
+    def __init__(self, act_size: int, device: str = "cpu"):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[2],
+            sparse_dim_mult=16,
+            decoder_dim_mults=[2],
+            device=device,
+            lr=2e-4,
+            topk=64,
             eps=1e-2,
             act_decay=0,
         )
 
-class ExperimentSAEInflate_2x2_Eps1eNeg3(ActInflationSAE):
+class ExperimentSAE2x2Squeeze(ActSqueezeSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[2],
-            sparse_dim_mult=32,
+            sparse_dim_mult=16,
             decoder_dim_mults=[2],
             device=device,
             lr=2e-4,
-            topk=128,
-            act_inflate=8e-8,
-            eps=1e-3,
-            act_decay=0,
-        )
-
-class ExperimentSAEInflate_2x2_Eps1eNeg4(ActInflationSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=2e-4,
-            topk=128,
-            act_inflate=8e-8,
-            eps=1e-4,
+            topk=64,
+            act_squeeze=1e-3,
             act_decay=0,
         )
