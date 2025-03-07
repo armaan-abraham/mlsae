@@ -288,8 +288,8 @@ def task_train(
         metrics = {
             "loss": loss.item(),
             "mse": result["mse_loss"].item(),
-            "baseline_mse": baseline_mse.item(),
-            "normalized_mse": (result["mse_loss"] / baseline_mse).item(),
+            "mse_baseline": baseline_mse.item(),
+            "mse_normalized": (result["mse_loss"] / baseline_mse).item(),
             "avg_nonzero_features": avg_nonzero_features,
         }
 
