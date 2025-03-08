@@ -80,44 +80,21 @@ class LayerNormActSqueezeSAE(ExperimentSAEBase):
             "act_squeeze_loss": act_squeeze_loss,
         }
 
-class ExperimentSAE2x2LayernormSqueeze1eNeg5lr4eNeg4(LayerNormActSqueezeSAE):
+    def should_resample_sparse_features(self, idx):
+        return False
+
+class ExperimentSAELayernormSqueeze5eNeg5lr4eNeg4(LayerNormActSqueezeSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[2],
+            encoder_dim_mults=[],
             sparse_dim_mult=32,
-            decoder_dim_mults=[2],
+            decoder_dim_mults=[],
             device=device,
             lr=4e-4,
             topk=128,
-            act_squeeze=1e-5,
+            act_squeeze=5e-5,
             act_decay=0,
         )
+    
 
-class ExperimentSAE2x2LayernormSqueeze1eNeg4lr8eNeg4(LayerNormActSqueezeSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=8e-4,
-            topk=128,
-            act_squeeze=1e-4,
-            act_decay=0,
-        )
-
-class ExperimentSAE2x2LayernormSqueeze1eNeg4lr4eNeg4(LayerNormActSqueezeSAE):
-    def __init__(self, act_size: int, device: str = "cpu"):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[2],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[2],
-            device=device,
-            lr=4e-4,
-            topk=128,
-            act_squeeze=1e-4,
-            act_decay=0,
-        )
