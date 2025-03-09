@@ -176,49 +176,6 @@ def init_optimizer(model: DeepSAE):
     return SparseAdam(model.get_param_groups())
 
 
-def resample_dead_features(optimizer: SparseAdam, model: DeepSAE, idx: torch.Tensor):
-    """
-    Zeros out the Adam moments for re-initialized rows/columns in the sparse encoder's
-    weight/bias and the first decoder layer's weight. This avoids using stale moment
-    estimates for brand-new features.
-    """
-    if not model.should_resample_sparse_features(idx):
-        return
-
-    logging.info(f"Resampling dead features model {model.name}")
-
-    model.resample_sparse_features(idx)
-
-    enc_layer = model.sparse_encoder_block[0]  # Linear for the sparse encoder
-    dec_layer = model.decoder_blocks[0]  # First Linear in the decoder
-
-    # We do not reset the step counter, but we reset the momentum
-    with torch.no_grad():
-        for group in optimizer.param_groups:
-            for p in group["params"]:
-                # Safely retrieve state
-                state = optimizer.state.get(p, {})
-                exp_avg = state.get("exp_avg", None)
-                exp_avg_sq = state.get("exp_avg_sq", None)
-                if exp_avg is None or exp_avg_sq is None:
-                    continue  # Some params may not have momentum buffers yet
-
-                if p is enc_layer.weight:
-                    # shape: (sparse_dim, in_dim)
-                    exp_avg[idx, :] = 0
-                    exp_avg_sq[idx, :] = 0
-
-                elif p is enc_layer.bias:
-                    # shape: (sparse_dim)
-                    exp_avg[idx] = 0
-                    exp_avg_sq[idx] = 0
-
-                elif p is dec_layer.weight:
-                    # shape: (out_dim, sparse_dim)
-                    exp_avg[:, idx] = 0
-                    exp_avg_sq[:, idx] = 0
-
-
 def preprocess_acts(acts: torch.Tensor):
     acts -= acts.mean(dim=1, keepdim=True)
     acts /= acts.norm(dim=1, keepdim=True)
@@ -306,17 +263,6 @@ def task_train(
             assert dead_features.shape == (
                 model.sparse_dim,
             ), f"Expected {model.sparse_dim} dead features, got {dead_features.shape}"
-
-            if (n_iter + 1) % train_cfg.resample_dead_every_n_batches == 0:
-                logging.info(
-                    f"Possibly resampling dead features device {device} model {model.name}"
-                )
-                try:
-                    resample_dead_features(optimizer, model, dead_features)
-                except Exception as e:
-                    logging.error(
-                        f"Failed to resample dead features device {device} model {model.name}: {e}"
-                    )
 
             metrics["dead_features"] = dead_features.float().sum().item()
             act_freq_history = torch.zeros(

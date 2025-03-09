@@ -46,7 +46,7 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cpu",
         topk: int = 16,
-        act_decay: float = 1e-2,
+        act_squeeze: float = 0,
         lr: float = 1e-4,
     ):
         super().__init__()
@@ -61,7 +61,7 @@ class DeepSAE(nn.Module):
         self.device = str(device)
         self.topk = topk
         assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
-        self.act_decay = act_decay
+        self.act_squeeze = act_squeeze
         self.lr = lr
 
         self.track_acts_stats = False
@@ -81,7 +81,7 @@ class DeepSAE(nn.Module):
         for dim in self.encoder_dims:
             linear_layer = self._create_linear_layer(in_dim, dim)
             self.dense_encoder_blocks.append(
-                torch.nn.Sequential(linear_layer, nn.ReLU())
+                torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim))
             )
             in_dim = dim
 
@@ -171,8 +171,27 @@ class DeepSAE(nn.Module):
         if self.encoder_dims:
             for block in self.dense_encoder_blocks:
                 resid = block(resid)
-
-        resid = feature_acts = self.sparse_encoder_block(resid)
+            resid = resid / torch.sqrt(torch.tensor(resid.shape[1]))
+        
+        # Access pre-topk activations from sparse_encoder_block
+        # sparse_encoder_block is Sequential(Linear, ReLU, TopKActivation)
+        linear_out = self.sparse_encoder_block[0](resid)  # Linear output
+        relu_out = self.sparse_encoder_block[1](linear_out)  # After ReLU, before TopK
+        
+        # Get pre-topk activations for inflation loss
+        pre_topk_acts = relu_out
+        
+        # Mean activation across batch for each feature
+        mean_acts_per_feature = pre_topk_acts.mean(dim=0)
+        
+        mean_acts_std = mean_acts_per_feature.std()
+        
+        act_squeeze_loss = mean_acts_std * self.act_squeeze
+        
+        # Continue with topk activation and the rest of the network
+        feature_acts = self.sparse_encoder_block[2](relu_out)  # Apply TopK
+        resid = feature_acts
+        
         assert (
             (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
         ).all()
@@ -184,17 +203,15 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        act_mag = feature_acts.pow(2).mean()
-        act_mag_loss = act_mag * self.act_decay
-
-        loss = mse_loss + act_mag_loss
+        
+        loss = mse_loss + act_squeeze_loss
 
         return {
             "loss": loss,
-            "act_mag": act_mag,
             "mse_loss": mse_loss,
             "feature_acts": feature_acts,
             "reconstructed": reconstructed,
+            "act_squeeze_loss": act_squeeze_loss,
         }
 
     def forward(self, x, iteration=None):
@@ -270,7 +287,7 @@ class DeepSAE(nn.Module):
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
             "topk": self.topk,
-            "act_decay": self.act_decay,
+            "act_squeeze": self.act_squeeze,
             "name": self.name,
             "lr": self.lr,
         }
@@ -288,25 +305,6 @@ class DeepSAE(nn.Module):
             model_id=model_id,
             load_from_s3=load_from_s3,
         )
-
-    def should_resample_sparse_features(self, idx):
-        return not self.encoder_dims and not self.decoder_dims
-
-    @torch.no_grad()
-    def resample_sparse_features(self, idx):
-        logging.info(f"Resampling sparse features {idx.sum().item()}")
-        enc_layer = self.sparse_encoder_block[0]
-        dec_layer = self.decoder_blocks[0]
-        new_W_enc = torch.zeros_like(enc_layer.weight)
-        new_W_dec = torch.zeros_like(dec_layer.weight)
-        nn.init.kaiming_normal_(new_W_enc)
-        nn.init.kaiming_normal_(new_W_dec)
-
-        new_b_enc = torch.zeros_like(enc_layer.bias)
-
-        enc_layer.weight.data[idx] = new_W_enc[idx]
-        enc_layer.bias.data[idx] = new_b_enc[idx]
-        dec_layer.weight.data[:, idx] = new_W_dec[:, idx]
 
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)
@@ -342,7 +340,7 @@ class DeepSAE(nn.Module):
                 enc_dtype=self.enc_dtype,
                 device=self.device,
                 topk=self.topk,
-                act_decay=self.act_decay,
+                act_squeeze=self.act_squeeze,
                 lr=self.lr,
             )
 

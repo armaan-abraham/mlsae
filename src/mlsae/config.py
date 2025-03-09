@@ -48,15 +48,11 @@ class TrainConfig:
     save_to_s3: bool = True
 
     measure_dead_over_n_batches: int = 15
-    resample_dead_every_n_batches: int = 4005
 
 
 train_cfg = TrainConfig()
 data_cfg = DataConfig()
 
-assert (
-    train_cfg.resample_dead_every_n_batches % train_cfg.measure_dead_over_n_batches == 0
-)
 assert data_cfg.act_block_size_tokens % data_cfg.seq_len == 0
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}

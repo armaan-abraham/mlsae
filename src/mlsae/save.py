@@ -159,7 +159,7 @@ def load_model(
         act_size=config_dict["act_size"],
         enc_dtype=config_dict["enc_dtype"],
         topk=config_dict["topk"],
-        act_decay=config_dict["act_decay"],
+        act_squeeze=config_dict["act_squeeze"],
         name=config_dict["name"],
     )
 
