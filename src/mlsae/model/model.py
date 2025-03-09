@@ -171,7 +171,7 @@ class DeepSAE(nn.Module):
         if self.encoder_dims:
             for block in self.dense_encoder_blocks:
                 resid = block(resid)
-            resid = resid / torch.sqrt(torch.tensor(resid.shape[1]))
+            resid = resid / torch.sqrt(torch.tensor(resid.shape[-1]))
         
         # Access pre-topk activations from sparse_encoder_block
         # sparse_encoder_block is Sequential(Linear, ReLU, TopKActivation)
@@ -340,7 +340,7 @@ class DeepSAE(nn.Module):
                 enc_dtype=self.enc_dtype,
                 device=self.device,
                 topk=self.topk,
-                act_squeeze=self.act_squeeze,
+                act_decay=self.act_decay,
                 lr=self.lr,
             )
 
