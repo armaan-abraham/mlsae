@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from mlsae.optimizer import MixedMuon, copy_optimizer_state
+from mlsae.optimizer import MixedMuon
 
 
 class MixedModel(nn.Module):
@@ -82,7 +82,7 @@ def test_mixed_muon_optimizer_state_copying():
                 group["update_buffer"].fill_(0.42)
     
     # Copy optimizer state
-    copy_optimizer_state(opt_source, opt_target)
+    opt_target.copy_state_from(opt_source)
     
     # Verify states match for each parameter
     for (p_source, p_target) in zip(model_source.parameters(), model_target.parameters()):
@@ -134,7 +134,7 @@ def test_mixed_muon_different_param_sizes():
     
     # Verify that copying state raises an error due to mismatched parameter sizes
     with pytest.raises(ValueError) as excinfo:
-        copy_optimizer_state(opt_source, opt_target)
+        opt_target.copy_state_from(opt_source)
     
     assert "Parameter size mismatch" in str(excinfo.value)
 

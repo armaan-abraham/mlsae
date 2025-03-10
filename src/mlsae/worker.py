@@ -8,7 +8,7 @@ import transformer_lens
 from mlsae.config import DEVICE_COUNT, DTYPES, data_cfg, train_cfg
 from mlsae.data import stream_training_chunks
 from mlsae.model import DeepSAE
-from mlsae.optimizer import SparseAdam, copy_optimizer_state
+from mlsae.optimizer import SparseAdam
 from mlsae.shared_memory import SharedMemory
 
 import os
@@ -202,7 +202,7 @@ def task_train(
     model = shared_memory["models"][model_idx].clone()
     model.to(device)
     optimizer = init_optimizer(model)
-    copy_optimizer_state(shared_memory["optimizers"][model_idx], optimizer)
+    optimizer.copy_state_from(shared_memory["optimizers"][model_idx])
     act_freq_history = shared_memory["act_freq_history"][model_idx].to(device)
     n_iter = shared_memory["n_iter"][model_idx].to(device)
     act_block = shared_memory["act_blocks"][act_block_idx]
@@ -282,7 +282,7 @@ def task_train(
     # update shared memory
     shared_memory["act_freq_history"][model_idx].copy_(act_freq_history)
     shared_memory["n_iter"][model_idx].copy_(n_iter)
-    copy_optimizer_state(optimizer, shared_memory["optimizers"][model_idx])
+    shared_memory["optimizers"][model_idx].copy_state_from(optimizer)
     shared_memory["models"][model_idx].copy_tensors_(model)
 
     del model

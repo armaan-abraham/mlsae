@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from mlsae.optimizer import SparseAdam, copy_optimizer_state
+from mlsae.optimizer import SparseAdam
 
 
 class SimpleModel(nn.Module):
@@ -42,7 +42,7 @@ def test_copy_optimizer_state_sparse_adam():
         opt_source.step()
     
     # Copy optimizer state
-    copy_optimizer_state(opt_source, opt_target)
+    opt_target.copy_state_from(opt_source)
     
     # Verify states match
     for (p_source, p_target) in zip(model_source.parameters(), model_target.parameters()):
@@ -94,7 +94,7 @@ def test_copy_optimizer_state_multiple_param_groups():
         opt_source.step()
     
     # Copy optimizer state
-    copy_optimizer_state(opt_source, opt_target)
+    opt_target.copy_state_from(opt_source)
     
     # Verify states match for each parameter group
     for g_source, g_target in zip(opt_source.param_groups, opt_target.param_groups):
@@ -130,7 +130,7 @@ def test_copy_optimizer_state_mismatched_param_groups():
     
     # Verify that copying state raises an error due to mismatched param groups
     with pytest.raises(ValueError) as excinfo:
-        copy_optimizer_state(opt_source, opt_target)
+        opt_target.copy_state_from(opt_source)
     
     assert "Cannot copy between optimizers with different param group sizes" in str(excinfo.value)
 
@@ -155,6 +155,6 @@ def test_copy_optimizer_state_different_param_sizes():
     
     # Verify that copying state raises an error due to mismatched parameter sizes
     with pytest.raises(ValueError) as excinfo:
-        copy_optimizer_state(opt_source, opt_target)
+        opt_target.copy_state_from(opt_source)
     
     assert "Parameter size mismatch" in str(excinfo.value)
