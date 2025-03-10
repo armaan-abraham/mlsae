@@ -47,7 +47,6 @@ class DeepSAE(nn.Module):
         device: str = "cpu",
         topk: int = 16,
         act_squeeze: float = 0,
-        lr: float = 1e-4,
     ):
         super().__init__()
 
@@ -62,7 +61,6 @@ class DeepSAE(nn.Module):
         self.topk = topk
         assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
         self.act_squeeze = act_squeeze
-        self.lr = lr
 
         self.track_acts_stats = False
         # Tracking stats
@@ -156,14 +154,6 @@ class DeepSAE(nn.Module):
             )
         nn.init.zeros_(layer.bias)
         return layer
-
-    def get_param_groups(self):
-        return [
-            {
-                "params": self.parameters(),
-                "lr": self.lr,
-            },
-        ]
 
     def _forward(self, x, iteration=None):
         # Encode
@@ -289,7 +279,6 @@ class DeepSAE(nn.Module):
             "topk": self.topk,
             "act_squeeze": self.act_squeeze,
             "name": self.name,
-            "lr": self.lr,
         }
         
         # Add optimizer configuration if defined in an ExperimentSAEBase subclass
@@ -349,7 +338,6 @@ class DeepSAE(nn.Module):
                 device=self.device,
                 topk=self.topk,
                 act_decay=self.act_decay,
-                lr=self.lr,
             )
 
         else:
