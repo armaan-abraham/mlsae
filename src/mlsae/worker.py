@@ -8,7 +8,6 @@ import transformer_lens
 from mlsae.config import DEVICE_COUNT, DTYPES, data_cfg, train_cfg
 from mlsae.data import stream_training_chunks
 from mlsae.model import DeepSAE
-from mlsae.optimizer import SparseAdam
 from mlsae.shared_memory import SharedMemory
 
 import os
@@ -174,7 +173,18 @@ def task_generate(
 
 
 def init_optimizer(model: DeepSAE):
-    return SparseAdam(model.get_param_groups())
+    # Use the model's optimizer configuration if available
+    optimizer_type = getattr(model, "optimizer_type", "sparse_adam")
+    optimizer_config = getattr(model, "optimizer_config", {})
+    
+    if optimizer_type == "mixed_muon":
+        from mlsae.optimizer.mixed_muon import MixedMuon
+        return MixedMuon(model.get_param_groups(), **optimizer_config)
+    elif optimizer_type == "sparse_adam":
+        from mlsae.optimizer.sparse_adam import SparseAdam
+        return SparseAdam(model.get_param_groups(), **optimizer_config)
+    else:
+        raise ValueError(f"Unknown optimizer type: {optimizer_type}")
 
 
 def preprocess_acts(acts: torch.Tensor):
