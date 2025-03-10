@@ -3,7 +3,8 @@ import inspect
 from pathlib import Path
 
 # Import base classes that should always be available
-from mlsae.model.model import DeepSAE, SparseAdam, TopKActivation
+from mlsae.model.model import DeepSAE, TopKActivation
+from mlsae.optimizer import SparseAdam
 
 # Import experimental models
 from mlsae.model.experiment_models import *

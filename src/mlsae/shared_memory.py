@@ -1,7 +1,8 @@
 import torch
 
 from mlsae.config import DTYPES, data_cfg
-from mlsae.model import DeepSAE, SparseAdam
+from mlsae.model import DeepSAE
+from mlsae.optimizer import SparseAdam
 
 
 class SharedMemory:
