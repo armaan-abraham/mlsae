@@ -74,6 +74,13 @@ def test_mixed_muon_optimizer_state_copying():
         loss.backward()
         opt_source.step()
     
+    # Modify the update buffer to a known value to test copying
+    for group in opt_source.param_groups:
+        if "optimizer_type" in group and group["optimizer_type"] == "muon":
+            if "update_buffer" in group:
+                # Set to recognizable pattern for testing
+                group["update_buffer"].fill_(0.42)
+    
     # Copy optimizer state
     copy_optimizer_state(opt_source, opt_target)
     
@@ -91,6 +98,19 @@ def test_mixed_muon_optimizer_state_copying():
                 else:
                     assert source_state[key] == target_state[key], \
                         f"Non-tensor state mismatch for key {key}"
+    
+    # Verify update buffer copying
+    for group_source, group_target in zip(opt_source.param_groups, opt_target.param_groups):
+        if "optimizer_type" in group_source and group_source["optimizer_type"] == "muon":
+            if "update_buffer" in group_source and "update_buffer" in group_target:
+                # Check that update buffer was copied correctly
+                assert torch.allclose(group_source["update_buffer"], group_target["update_buffer"]), \
+                    "Update buffer not copied correctly"
+                
+                # Check that views are correctly pointing to the buffer
+                for i, view in enumerate(group_target["update_buffer_views"]):
+                    assert torch.allclose(view, group_target["update_buffer"][i]), \
+                        f"Update buffer view {i} not correctly linked to update buffer"
 
 
 def test_mixed_muon_different_param_sizes():

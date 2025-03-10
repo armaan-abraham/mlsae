@@ -21,6 +21,7 @@ def copy_optimizer_state(source_optimizer, target_optimizer):
         )
     
     for group_source, group_target in zip(source_optimizer.param_groups, target_optimizer.param_groups):
+        # Copy parameter-specific state
         for p_source, p_target in zip(group_source["params"], group_target["params"]):
             if p_target.requires_grad:
                 if p_target.data.size() != p_source.data.size():
@@ -41,5 +42,18 @@ def copy_optimizer_state(source_optimizer, target_optimizer):
                     else:
                         # Copy non-tensor state (e.g., scalars)
                         state_target[key] = state_source[key]
+        
+        # Copy group-specific buffers (for MixedMuon's update buffer)
+        if "optimizer_type" in group_source and group_source["optimizer_type"] == "muon":
+            if "update_buffer" in group_source and "update_buffer" in group_target:
+                # Copy update buffer data
+                group_target["update_buffer"].copy_(group_source["update_buffer"])
+                
+                # Re-create views if needed
+                if "update_buffer_views" in group_target:
+                    group_target["update_buffer_views"] = [
+                        group_target["update_buffer"][i] 
+                        for i in range(len(group_target["update_buffer_views"]))
+                    ]
     
     return target_optimizer
