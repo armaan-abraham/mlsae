@@ -9,20 +9,20 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     sae_batch_size_tokens: int = 100_000
-    act_block_size_sae_batch_size_mult: int = 100
+    act_block_size_sae_batch_size_mult: int = 32
 
-    seq_len: int = 64
+    seq_len: int = 16
     llm_batch_size_seqs: int = 300
 
     sae_dtype: str = "fp32"
-    model_name: str = "gpt2-small"
-    tokenizer_name: str = "gpt2"
+    model_name: str = "pythia-14m"
+    tokenizer_name: str = "EleutherAI/gpt-neox-20b"
     site: str = "resid_pre"
-    layer: int = 9
-    act_size: int = 768
+    layer: int = 2
+    act_size: int = 128
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
-    dataset_batch_size_entries: int = 50
+    dataset_batch_size_entries: int = 5
 
     n_token_blocks: int = 5
     n_act_blocks: int = 2
@@ -42,10 +42,10 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    num_tokens: int = int(7.5e9)
+    num_tokens: int = int(2e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    save_to_s3: bool = True
+    save_to_s3: bool = False
 
     measure_dead_over_n_batches: int = 15
 
