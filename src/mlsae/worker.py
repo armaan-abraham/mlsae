@@ -261,13 +261,17 @@ def task_train(
             "avg_nonzero_features": avg_nonzero_features,
         }
 
-        # Conditionally add any optional metrics
-        optional_metrics = ["act_mag", "selector_loss", "L0_penalty", "temperature"]
-        for metric in optional_metrics:
-            if metric in result:
-                metrics[metric] = result[metric]
-                if isinstance(metrics[metric], torch.Tensor):
-                    metrics[metric] = metrics[metric].item()
+        # Log all values in result that are float, int, or tensor of size 1
+        for key, value in result.items():
+            # Skip metrics we've already logged
+            if key in metrics:
+                continue
+                
+            # Check if it's a scalar value we can log
+            if isinstance(value, (float, int)):
+                metrics[key] = value
+            elif isinstance(value, torch.Tensor) and value.numel() == 1:
+                metrics[key] = value.item()
 
         if (n_iter + 1) % train_cfg.measure_dead_over_n_batches == 0:
             dead_features = act_freq_history == 0
