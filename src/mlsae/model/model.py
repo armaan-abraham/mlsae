@@ -280,7 +280,7 @@ class DeepSAE(nn.Module):
         )
 
     def get_config_dict(self):
-        return {
+        config = {
             "encoder_dims": self.encoder_dims,
             "decoder_dims": self.decoder_dims,
             "sparse_dim": self.sparse_dim,
@@ -291,6 +291,14 @@ class DeepSAE(nn.Module):
             "name": self.name,
             "lr": self.lr,
         }
+        
+        # Add optimizer configuration if defined in an ExperimentSAEBase subclass
+        if hasattr(self, "optimizer_type"):
+            config["optimizer_type"] = self.optimizer_type
+        if hasattr(self, "optimizer_config"):
+            config["optimizer_config"] = self.optimizer_config
+            
+        return config
 
     @classmethod
     def load(cls, architecture_name, model_id=None, load_from_s3=False):
@@ -363,11 +371,14 @@ class ExperimentSAEBase(DeepSAE):
     """Base class for all experimental SAE models.
     Automatically extracts the name from the class name (text after 'ExperimentSAE').
     """
-    def __init__(self, *args, **kwargs):
-        print(args, kwargs)
+    def __init__(self, *args, optimizer_type="sparse_adam", optimizer_config=None, **kwargs):
         # Extract model name from class name (e.g., ExperimentSAE0 -> "0")
         class_name = self.__class__.__name__
         model_name = class_name[len("ExperimentSAE"):]
+        
+        # Set optimizer configuration
+        self.optimizer_type = optimizer_type
+        self.optimizer_config = optimizer_config or {}
         
         # Pass this to the parent class
         super().__init__(
