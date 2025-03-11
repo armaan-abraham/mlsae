@@ -161,6 +161,11 @@ class DeepSAE(nn.Module):
         if self.encoder_dims:
             for block in self.dense_encoder_blocks:
                 resid = block(resid)
+            # Dead neuron counts are very sensitive to initial scaling. I have
+            # found that dividing by the L2 norm of the input activations helps
+            # for shallow SAEs. This division makes it so that we initially
+            # divide by the L2 norm in combination with the layernorm (as std
+            # and L2 norm are proportional).
             resid = resid / torch.sqrt(torch.tensor(resid.shape[-1]))
         
         # Access pre-topk activations from sparse_encoder_block
