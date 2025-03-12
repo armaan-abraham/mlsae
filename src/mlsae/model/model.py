@@ -50,6 +50,7 @@ class DeepSAE(nn.Module):
         topk_final: int = None,
         topk_decay_iter: int = None,
         act_squeeze: float = 0,
+        weight_decay: float = 1e-3,
     ):
         super().__init__()
 
@@ -61,6 +62,7 @@ class DeepSAE(nn.Module):
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device = str(device)
+        self.weight_decay = weight_decay
         
         # Setup topk decay schedule
         self.topk_init = topk_init if topk_init is not None else topk
@@ -87,15 +89,33 @@ class DeepSAE(nn.Module):
         self.dense_encoder_blocks = torch.nn.ModuleList()
         in_dim = self.act_size
 
-        for dim in self.encoder_dims:
+        for i, dim in enumerate(self.encoder_dims):
             linear_layer = self._create_linear_layer(in_dim, dim)
+            
+            self.weight_decay_params.append(linear_layer.weight)
+            self.no_weight_decay_params.append(linear_layer.bias)
+
+            modules = [linear_layer, nn.ReLU()]
+
+            if i == len(self.encoder_dims) - 1:
+                layer_norm = nn.LayerNorm(dim)
+                
+                self.no_weight_decay_params.append(layer_norm.weight)
+                self.no_weight_decay_params.append(layer_norm.bias)
+                modules.append(layer_norm)
+
             self.dense_encoder_blocks.append(
-                torch.nn.Sequential(linear_layer, nn.ReLU(), nn.LayerNorm(dim))
+                torch.nn.Sequential(*modules)
             )
             in_dim = dim
 
+        sparse_layer = self._create_linear_layer(in_dim, self.sparse_dim)
+        
+        self.weight_decay_params.append(sparse_layer.weight)
+        self.no_weight_decay_params.append(sparse_layer.bias)
+        
         self.sparse_encoder_block = torch.nn.Sequential(
-            self._create_linear_layer(in_dim, self.sparse_dim),
+            sparse_layer,
             nn.ReLU(),
             TopKActivation(self.topk),
         )
@@ -106,16 +126,27 @@ class DeepSAE(nn.Module):
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(in_dim, dim, normalize=True)
+            
+            self.weight_decay_params.append(linear_layer.weight)
+            self.no_weight_decay_params.append(linear_layer.bias)
+            
             self.decoder_blocks.append(
                 nn.Sequential(linear_layer, nn.ReLU())
             )
             in_dim = dim
 
-        self.decoder_blocks.append(
-            self._create_linear_layer(in_dim, self.act_size, normalize=True)
-        )
+        final_layer = self._create_linear_layer(in_dim, self.act_size, normalize=True)
+        
+        self.weight_decay_params.append(final_layer.weight)
+        self.no_weight_decay_params.append(final_layer.bias)
+        
+        self.decoder_blocks.append(final_layer)
 
     def _init_params(self):
+        # Initialize lists to track parameters for weight decay
+        self.weight_decay_params = []
+        self.no_weight_decay_params = []
+        
         self._init_encoder_params()
         self._init_decoder_params()
         self._tie_weights()
@@ -163,10 +194,6 @@ class DeepSAE(nn.Module):
     def _create_linear_layer(self, in_dim, out_dim, normalize=False):
         layer = nn.Linear(in_dim, out_dim)
         nn.init.kaiming_normal_(layer.weight)
-        if normalize:
-            layer.weight.data = layer.weight.data / layer.weight.data.norm(
-                dim=-1, keepdim=True
-            )
         nn.init.zeros_(layer.bias)
         return layer
 
@@ -185,9 +212,21 @@ class DeepSAE(nn.Module):
     def _forward(self, x, iteration=None):
         # Encode
         resid = x
+
         if self.encoder_dims:
+
             for block in self.dense_encoder_blocks:
-                resid = block(resid)
+                out = block(resid)
+
+                if out.shape[1] == resid.shape[1]:
+                    # Simple case: shapes match, just add
+                    resid = resid + out
+                else:
+                    assert out.shape[1] > resid.shape[1]
+                    padding = torch.zeros_like(out)
+                    padding[:, :resid.shape[1]] = resid
+                    resid = out + padding
+
             # Dead neuron counts are very sensitive to initial scaling. I have
             # found that dividing by the L2 norm of the input activations helps
             # for shallow SAEs. This division makes it so that we initially
@@ -195,56 +234,60 @@ class DeepSAE(nn.Module):
             # and L2 norm are proportional).
             resid = resid / torch.sqrt(torch.tensor(resid.shape[-1]))
         
-        # Access pre-topk activations from sparse_encoder_block
-        # sparse_encoder_block is Sequential(Linear, ReLU, TopKActivation)
-        linear_out = self.sparse_encoder_block[0](resid)  # Linear output
-        relu_out = self.sparse_encoder_block[1](linear_out)  # After ReLU, before TopK
-        
-        # Get pre-topk activations for inflation loss
-        pre_topk_acts = relu_out
-        
-        # Mean activation across batch for each feature
-        mean_acts_per_feature = pre_topk_acts.mean(dim=0)
-        
-        mean_acts_std = mean_acts_per_feature.std()
-        
-        act_squeeze_loss = mean_acts_std * self.act_squeeze
-        
-        # Get current topk value based on iteration
-        current_topk = self.get_current_topk(iteration)
-        
-        # Apply topk with the current value
-        # Since TopKActivation is instantiated with a fixed k, we need to create a new one
-        # with the current k value for this iteration
-        topk_activation = TopKActivation(current_topk)
-        feature_acts = topk_activation(relu_out)
-        
+        # Continue with topk activation and the rest of the network
+        feature_acts = self.sparse_encoder_block(resid)
         resid = feature_acts
         
         assert (
-            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - current_topk)
+            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
         ).all()
 
-        for block in self.decoder_blocks:
-            resid = block(resid)
+        def apply_decoder_block(resid, block):
+            out = block(resid)
+            return out
+            # # Divide by decoder output vector norms on forward pass
+            # def apply_linear_layer(resid, linear_layer):
+            #     assert linear_layer.weight.data.shape[1] == resid.shape[1]
+            #     # W = linear_layer.weight / torch.norm(linear_layer.weight, dim=0, keepdim=True)
+            #     W = linear_layer.weight
+            #     out = resid @ W.T
+            #     out += linear_layer.bias
+            #     return out
+
+            # if isinstance(block, nn.Sequential):
+            #     linear_layer, activation = block[0], block[1]
+            #     out = apply_linear_layer(resid, linear_layer)
+            #     out = activation(out)
+            # else:
+            #     assert isinstance(block, nn.Linear)
+            #     out = apply_linear_layer(resid, block)
+
+            # return out
+
+        resid = apply_decoder_block(resid, self.decoder_blocks[0])
+
+        if len(self.decoder_blocks) > 1:
+            for block in self.decoder_blocks[1:-1]:
+                resid = apply_decoder_block(resid, block) + resid
+            
+            resid = apply_decoder_block(resid, self.decoder_blocks[-1])
 
         reconstructed = resid
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
         
-        loss = mse_loss + act_squeeze_loss
+        loss = mse_loss
 
         return {
             "loss": loss,
             "mse_loss": mse_loss,
             "feature_acts": feature_acts,
             "reconstructed": reconstructed,
-            "act_squeeze_loss": act_squeeze_loss,
-            "current_topk": current_topk,  # Include current topk in the output
         }
 
     def forward(self, x, iteration=None):
+        # self.make_decoder_weights_unit_norm()
         result = self._forward(x, iteration)
 
         # Optionally track activation stats and MSE
@@ -280,23 +323,20 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def process_gradients(self):
-        self.make_decoder_weights_and_grad_unit_norm()
+        # self.make_decoder_weights_unit_norm()
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
-    def _make_decoder_weights_and_grad_unit_norm(self, weight):
-        w_normed = weight / weight.norm(dim=-1, keepdim=True)
-        if weight.grad is not None:
-            w_dec_grad_proj = (weight.grad * w_normed).sum(-1, keepdim=True) * w_normed
-            weight.grad -= w_dec_grad_proj
+    def _make_decoder_weights_unit_norm(self, weight):
+        w_normed = weight / weight.norm(dim=0, keepdim=True)
         weight.data = w_normed
 
     @torch.no_grad()
-    def make_decoder_weights_and_grad_unit_norm(self):
+    def make_decoder_weights_unit_norm(self):
         for block in self.decoder_blocks:
             if isinstance(block, nn.Linear):
-                self._make_decoder_weights_and_grad_unit_norm(block.weight)
+                self._make_decoder_weights_unit_norm(block.weight)
             elif isinstance(block, nn.Sequential) and isinstance(block[0], nn.Linear):
-                self._make_decoder_weights_and_grad_unit_norm(block[0].weight)
+                self._make_decoder_weights_unit_norm(block[0].weight)
 
     def save(self, architecture_name, model_id=None, save_to_s3=False):
         """
@@ -399,6 +439,20 @@ class DeepSAE(nn.Module):
         new_sae.copy_tensors_(self)
 
         return new_sae
+
+    def get_param_groups(self):
+        """
+        Returns parameter groups for optimization:
+        1. Encoder weights - with weight decay
+        2. All other parameters (biases, layer norm, decoder) - without weight decay
+        
+        Returns:
+            List of parameter group dictionaries for optimizer
+        """
+        return [
+            {'params': self.weight_decay_params, 'weight_decay': self.weight_decay},
+            {'params': self.no_weight_decay_params, 'weight_decay': 0.0}
+        ]
 
 
 

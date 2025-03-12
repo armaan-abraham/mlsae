@@ -1,13 +1,14 @@
 from mlsae.model.model import ExperimentSAEBase, TopKActivation
 import torch
 import math
+import torch.nn as nn
 
 class ResSAE(ExperimentSAEBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         assert self.act_squeeze == 0
-        assert all(dim == self.act_size for dim in self.encoder_dims)
-        assert all(dim == self.act_size for dim in self.decoder_dims)
+        assert len(set(self.encoder_dims)) == 1
+        assert len(set(self.decoder_dims)) == 1
 
     def _forward(self, x, iteration=None):
         # Encode
@@ -16,7 +17,16 @@ class ResSAE(ExperimentSAEBase):
         if self.encoder_dims:
 
             for block in self.dense_encoder_blocks:
-                resid = block(resid) + resid
+                out = block(resid)
+
+                if out.shape[1] == resid.shape[1]:
+                    # Simple case: shapes match, just add
+                    resid = resid + out
+                else:
+                    assert out.shape[1] > resid.shape[1]
+                    padding = torch.zeros_like(out)
+                    padding[:, :resid.shape[1]] = resid
+                    resid = out + padding
 
             # Dead neuron counts are very sensitive to initial scaling. I have
             # found that dividing by the L2 norm of the input activations helps
@@ -33,12 +43,35 @@ class ResSAE(ExperimentSAEBase):
             (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
         ).all()
 
-        resid = self.decoder_blocks[0](resid)
+        def apply_decoder_block(resid, block):
+            out = block(resid)
+            return out
+            # # Divide by decoder output vector norms on forward pass
+            # def apply_linear_layer(resid, linear_layer):
+            #     assert linear_layer.weight.data.shape[1] == resid.shape[1]
+            #     # W = linear_layer.weight / torch.norm(linear_layer.weight, dim=0, keepdim=True)
+            #     W = linear_layer.weight
+            #     out = resid @ W.T
+            #     out += linear_layer.bias
+            #     return out
 
-        for block in self.decoder_blocks[1:-1]:
-            resid = block(resid) + resid
-        
-        resid = self.decoder_blocks[-1](resid)
+            # if isinstance(block, nn.Sequential):
+            #     linear_layer, activation = block[0], block[1]
+            #     out = apply_linear_layer(resid, linear_layer)
+            #     out = activation(out)
+            # else:
+            #     assert isinstance(block, nn.Linear)
+            #     out = apply_linear_layer(resid, block)
+
+            # return out
+
+        resid = apply_decoder_block(resid, self.decoder_blocks[0])
+
+        if len(self.decoder_blocks) > 1:
+            for block in self.decoder_blocks[1:-1]:
+                resid = apply_decoder_block(resid, block) + resid
+            
+            resid = apply_decoder_block(resid, self.decoder_blocks[-1])
 
         reconstructed = resid
 
@@ -54,38 +87,59 @@ class ResSAE(ExperimentSAEBase):
             "reconstructed": reconstructed,
         }
 
-class ExperimentSAERes1x1(ResSAE):
+class ExperimentSAERes1(ResSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[1],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[1],
+            encoder_dim_mults=[4],
+            sparse_dim_mult=16,
+            decoder_dim_mults=[4],
             device=device,
-            topk_init=16,
-            topk_final=16,
+            topk_init=32,
+            topk_final=32,
             topk_decay_iter=2000,
             act_squeeze=0,
+            weight_decay=1e-2,
             optimizer_type="sparse_adam",
             optimizer_config={
-                "lr": 4e-4,
+                "lr": 5e-4,
             }
         )
 
-class ExperimentSAERes1x1x1x1(ResSAE):
+class ExperimentSAERes2(ResSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[1, 1],
-            sparse_dim_mult=32,
-            decoder_dim_mults=[1, 1],
+            encoder_dim_mults=[4, 4],
+            sparse_dim_mult=16,
+            decoder_dim_mults=[4, 4],
             device=device,
-            topk_init=16,
-            topk_final=16,
+            topk_init=32,
+            topk_final=32,
             topk_decay_iter=2000,
             act_squeeze=0,
+            weight_decay=1e-2,
             optimizer_type="sparse_adam",
             optimizer_config={
-                "lr": 4e-4,
+                "lr": 5e-4,
+            }
+        )
+
+class ExperimentSAERes3(ResSAE):
+    def __init__(self, act_size: int, device: str = "cpu"):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[4, 4, 4],
+            sparse_dim_mult=16,
+            decoder_dim_mults=[4, 4, 4],
+            device=device,
+            topk_init=32,
+            topk_final=32,
+            topk_decay_iter=2000,
+            act_squeeze=0,
+            weight_decay=1e-2,
+            optimizer_type="sparse_adam",
+            optimizer_config={
+                "lr": 5e-4,
             }
         )
