@@ -46,6 +46,9 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cpu",
         topk: int = 16,
+        topk_init: int = None,
+        topk_final: int = None,
+        topk_decay_iter: int = None,
         act_squeeze: float = 0,
     ):
         super().__init__()
@@ -58,8 +61,16 @@ class DeepSAE(nn.Module):
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device = str(device)
-        self.topk = topk
-        assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
+        
+        # Setup topk decay schedule
+        self.topk_init = topk_init if topk_init is not None else topk
+        self.topk_final = topk_final if topk_final is not None else topk
+        self.topk_decay_iter = topk_decay_iter if topk_decay_iter is not None else 0
+        self.topk = self.topk_init  # For backwards compatibility
+        
+        assert self.topk_init < self.sparse_dim, f"TopK initial value must be less than sparse dim"
+        assert self.topk_final < self.sparse_dim, f"TopK final value must be less than sparse dim"
+        
         self.act_squeeze = act_squeeze
 
         self.track_acts_stats = False
@@ -95,8 +106,9 @@ class DeepSAE(nn.Module):
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(in_dim, dim, normalize=True)
-            self.decoder_blocks.append(linear_layer)
-            self.decoder_blocks.append(nn.ReLU())
+            self.decoder_blocks.append(
+                nn.Sequential(linear_layer, nn.ReLU())
+            )
             in_dim = dim
 
         self.decoder_blocks.append(
@@ -116,11 +128,14 @@ class DeepSAE(nn.Module):
         encoder_linears.append(self.sparse_encoder_block[0])
 
         # Get the decoder linear layers.
-        # Note that in _init_decoder_params, we add linear layers interleaved with ReLU.
-        # Extract only the Linear modules.
-        decoder_linears = [
-            module for module in self.decoder_blocks if isinstance(module, nn.Linear)
-        ]
+        # Extract the Linear modules from Sequential blocks for hidden layers,
+        # plus the final output layer.
+        decoder_linears = []
+        for module in self.decoder_blocks:
+            if isinstance(module, nn.Sequential):
+                decoder_linears.append(module[0])  # Get Linear from Sequential(Linear, ReLU)
+            else:
+                decoder_linears.append(module)  # The final layer is just a Linear module
 
         # Pair layers until either encoder or decoder runs out
         # Last encoder layer pairs with first decoder layer, etc.
@@ -155,6 +170,18 @@ class DeepSAE(nn.Module):
         nn.init.zeros_(layer.bias)
         return layer
 
+    def get_current_topk(self, iteration=None):
+        """
+        Calculate the current topk value based on the linear decay schedule.
+        """
+        if iteration is None or self.topk_decay_iter <= 0 or iteration >= self.topk_decay_iter:
+            return self.topk_final
+            
+        # Linear decay from topk_init to topk_final
+        decay_fraction = iteration / self.topk_decay_iter
+        current_topk = self.topk_init - decay_fraction * (self.topk_init - self.topk_final)
+        return max(1, int(current_topk))  # Ensure it's at least 1
+
     def _forward(self, x, iteration=None):
         # Encode
         resid = x
@@ -183,12 +210,19 @@ class DeepSAE(nn.Module):
         
         act_squeeze_loss = mean_acts_std * self.act_squeeze
         
-        # Continue with topk activation and the rest of the network
-        feature_acts = self.sparse_encoder_block[2](relu_out)  # Apply TopK
+        # Get current topk value based on iteration
+        current_topk = self.get_current_topk(iteration)
+        
+        # Apply topk with the current value
+        # Since TopKActivation is instantiated with a fixed k, we need to create a new one
+        # with the current k value for this iteration
+        topk_activation = TopKActivation(current_topk)
+        feature_acts = topk_activation(relu_out)
+        
         resid = feature_acts
         
         assert (
-            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
+            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - current_topk)
         ).all()
 
         for block in self.decoder_blocks:
@@ -207,6 +241,7 @@ class DeepSAE(nn.Module):
             "feature_acts": feature_acts,
             "reconstructed": reconstructed,
             "act_squeeze_loss": act_squeeze_loss,
+            "current_topk": current_topk,  # Include current topk in the output
         }
 
     def forward(self, x, iteration=None):
@@ -260,6 +295,8 @@ class DeepSAE(nn.Module):
         for block in self.decoder_blocks:
             if isinstance(block, nn.Linear):
                 self._make_decoder_weights_and_grad_unit_norm(block.weight)
+            elif isinstance(block, nn.Sequential) and isinstance(block[0], nn.Linear):
+                self._make_decoder_weights_and_grad_unit_norm(block[0].weight)
 
     def save(self, architecture_name, model_id=None, save_to_s3=False):
         """
@@ -282,6 +319,9 @@ class DeepSAE(nn.Module):
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
             "topk": self.topk,
+            "topk_init": self.topk_init,
+            "topk_final": self.topk_final,
+            "topk_decay_iter": self.topk_decay_iter,
             "act_squeeze": self.act_squeeze,
             "name": self.name,
         }
@@ -342,7 +382,10 @@ class DeepSAE(nn.Module):
                 enc_dtype=self.enc_dtype,
                 device=self.device,
                 topk=self.topk,
-                act_decay=self.act_decay,
+                topk_init=self.topk_init,
+                topk_final=self.topk_final,
+                topk_decay_iter=self.topk_decay_iter,
+                act_squeeze=self.act_squeeze,
             )
 
         else:
