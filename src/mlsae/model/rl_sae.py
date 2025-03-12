@@ -100,10 +100,11 @@ class RLFeatureSelector(nn.Module):
         
         # Calculate mean probability for each feature across the batch
         mean_probs_per_feature = self.saved_probs.mean(dim=0)  # [sparse_dim]
-        # Apply -log10 to penalize very low average probabilities
-        neg_log10_mean_probs = -torch.log10(mean_probs_per_feature)
+
+        unscaled_deadness_penalty = mean_probs_per_feature.std()
+        
         # Take the mean across all features
-        deadness_penalty = neg_log10_mean_probs.mean() * self.prob_deadness_penalty
+        deadness_penalty = unscaled_deadness_penalty * self.prob_deadness_penalty
         
         # Add to selector loss
         selector_loss = selector_loss + deadness_penalty
