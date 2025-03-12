@@ -242,35 +242,14 @@ class DeepSAE(nn.Module):
             (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
         ).all()
 
-        def apply_decoder_block(resid, block):
-            out = block(resid)
-            return out
-            # # Divide by decoder output vector norms on forward pass
-            # def apply_linear_layer(resid, linear_layer):
-            #     assert linear_layer.weight.data.shape[1] == resid.shape[1]
-            #     # W = linear_layer.weight / torch.norm(linear_layer.weight, dim=0, keepdim=True)
-            #     W = linear_layer.weight
-            #     out = resid @ W.T
-            #     out += linear_layer.bias
-            #     return out
 
-            # if isinstance(block, nn.Sequential):
-            #     linear_layer, activation = block[0], block[1]
-            #     out = apply_linear_layer(resid, linear_layer)
-            #     out = activation(out)
-            # else:
-            #     assert isinstance(block, nn.Linear)
-            #     out = apply_linear_layer(resid, block)
-
-            # return out
-
-        resid = apply_decoder_block(resid, self.decoder_blocks[0])
+        resid = self.decoder_blocks[0](resid)
 
         if len(self.decoder_blocks) > 1:
             for block in self.decoder_blocks[1:-1]:
-                resid = apply_decoder_block(resid, block) + resid
+                resid = block(resid) + resid
             
-            resid = apply_decoder_block(resid, self.decoder_blocks[-1])
+            resid = self.decoder_blocks[-1](resid)
 
         reconstructed = resid
 
