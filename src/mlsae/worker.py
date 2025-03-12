@@ -179,10 +179,10 @@ def init_optimizer(model: DeepSAE):
     
     if optimizer_type == "mixed_muon":
         from mlsae.optimizer.mixed_muon import MixedMuon
-        return MixedMuon(model.get_param_groups(), **optimizer_config)
+        return MixedMuon(model.parameters(), **optimizer_config)
     elif optimizer_type == "sparse_adam":
         from mlsae.optimizer.sparse_adam import SparseAdam
-        return SparseAdam(model.get_param_groups(), **optimizer_config)
+        return SparseAdam(model.parameters(), **optimizer_config)
     else:
         raise ValueError(f"Unknown optimizer type: {optimizer_type}")
 
@@ -234,7 +234,6 @@ def task_train(
         result = model(acts, iteration=n_iter)
         loss = result["loss"]
         feature_acts = result["feature_acts"]
-        
         loss.backward()
         model.process_gradients()
         optimizer.step()

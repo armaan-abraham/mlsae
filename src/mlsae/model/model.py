@@ -113,11 +113,10 @@ class DeepSAE(nn.Module):
         
         self.weight_decay_params.append(sparse_layer.weight)
         self.no_weight_decay_params.append(sparse_layer.bias)
-        
-        self.sparse_encoder_block = torch.nn.Sequential(
+
+        self.preact_block = torch.nn.Sequential(
             sparse_layer,
             nn.ReLU(),
-            TopKActivation(self.topk),
         )
 
     def _init_decoder_params(self):
@@ -156,7 +155,7 @@ class DeepSAE(nn.Module):
         # For each dense encoder block, the linear layer is the first module in the Sequential.
         encoder_linears = [block[0] for block in self.dense_encoder_blocks]
         # Append the linear layer from the sparse encoder block (its first module)
-        encoder_linears.append(self.sparse_encoder_block[0])
+        encoder_linears.append(self.preact_block[0])
 
         # Get the decoder linear layers.
         # Extract the Linear modules from Sequential blocks for hidden layers,
@@ -209,10 +208,7 @@ class DeepSAE(nn.Module):
         current_topk = self.topk_init - decay_fraction * (self.topk_init - self.topk_final)
         return max(1, int(current_topk))  # Ensure it's at least 1
 
-    def _forward(self, x, iteration=None):
-        # Encode
-        resid = x
-
+    def _get_preacts(self, resid):
         if self.encoder_dims:
 
             for block in self.dense_encoder_blocks:
@@ -234,16 +230,12 @@ class DeepSAE(nn.Module):
             # and L2 norm are proportional).
             resid = resid / torch.sqrt(torch.tensor(resid.shape[-1]))
         
-        # Continue with topk activation and the rest of the network
-        feature_acts = self.sparse_encoder_block(resid)
-        resid = feature_acts
+        resid = self.preact_block(resid)
         
-        assert (
-            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
-        ).all()
-
-
-        resid = self.decoder_blocks[0](resid)
+        return resid
+    
+    def _decode(self, feature_acts):
+        resid = self.decoder_blocks[0](feature_acts)
 
         if len(self.decoder_blocks) > 1:
             for block in self.decoder_blocks[1:-1]:
@@ -251,7 +243,17 @@ class DeepSAE(nn.Module):
             
             resid = self.decoder_blocks[-1](resid)
 
-        reconstructed = resid
+        return resid
+
+    def _forward(self, x, iteration=None):
+        preacts = self._get_preacts(x)
+
+        feature_acts = TopKActivation(self.topk)(preacts)
+        assert (
+            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
+        ).all()
+
+        reconstructed = self._decode(feature_acts)
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
@@ -369,8 +371,8 @@ class DeepSAE(nn.Module):
 
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)
-        self.device = self.sparse_encoder_block[0].weight.device
-        self.dtype = self.sparse_encoder_block[0].weight.dtype
+        self.device = self.preact_block[0].weight.device
+        self.dtype = self.preact_block[0].weight.dtype
 
     def copy_tensors_(self, other):
         """
