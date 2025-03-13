@@ -8,8 +8,8 @@ import transformer_lens
 @dataclass
 class DataConfig:
     seed: int = 49
-    sae_batch_size_tokens: int = 100_000
-    act_block_size_sae_batch_size_mult: int = 100
+    sae_batch_size_tokens: int = 80_000
+    act_block_size_sae_batch_size_mult: int = 125
 
     seq_len: int = 16
     llm_batch_size_seqs: int = 500

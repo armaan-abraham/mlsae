@@ -14,13 +14,15 @@ class RLFeatureSelector(nn.Module):
     based on probabilities from a sigmoid activation.
     """
 
-    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, prob_bias=-4, prob_deadness_penalty=0.1):
+    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, prob_bias=-4, prob_deadness_penalty=0.1, ppo_clip=0.2):
         super().__init__()
         self.sparse_dim = sparse_dim
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
         self.prob_bias = prob_bias
         self.prob_deadness_penalty = prob_deadness_penalty
+        self.ppo_clip = ppo_clip  # PPO clipping parameter
+        self.old_probs = None  # Store old probabilities for PPO
 
         # Separate bias and scalar for magnitudes
         self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
@@ -51,6 +53,9 @@ class RLFeatureSelector(nn.Module):
 
         # Store for learning
         self.saved_probs = probs
+        
+        if self.old_probs is None:
+            self.old_probs = probs.detach()
 
         # Sample multiple masks: shape [num_samples, batch_size, sparse_dim]
         masks = torch.stack([self.sample_mask(probs) for _ in range(num_samples)])
@@ -62,48 +67,44 @@ class RLFeatureSelector(nn.Module):
 
     def update_selector(self, masks, rewards):
         """
-        Update the selector using all masks, weighted by their rewards.
+        Update the selector using all masks, weighted by their rewards, with PPO clipping.
         masks: [num_samples, batch_size, sparse_dim] - all sampled masks
         rewards: [num_samples, batch_size] - rewards for each mask
         """
-        if not hasattr(self, "saved_probs"):
-            return 0.0
+        assert hasattr(self, "saved_probs")
+        assert self.old_probs is not None
 
         num_samples, batch_size, _ = masks.shape
         
         # Normalize rewards across samples for each batch item
         reward_means = rewards.mean(dim=0, keepdim=True)  # [1, batch_size]
         reward_stds = rewards.std(dim=0, keepdim=True) + 1e-8  # [1, batch_size]
-        normalized_rewards = (rewards - reward_means) / reward_stds  # [num_samples, batch_size]
+        advantages = (rewards - reward_means) / reward_stds  # [num_samples, batch_size]
         
-        # Expand probs for all samples
+        # Expand current probs and old probs for all samples
         # [batch_size, sparse_dim] -> [num_samples, batch_size, sparse_dim]
         expanded_probs = self.saved_probs.unsqueeze(0).expand(num_samples, -1, -1)
+        expanded_old_probs = self.old_probs.unsqueeze(0).expand(num_samples, -1, -1)
         
-        # Calculate log-probabilities for all masks
+        # Calculate probabilities of masks under current and old policies
         # [num_samples, batch_size, sparse_dim]
-        log_probs = (
-            torch.log(expanded_probs + 1e-8) * masks
-            + torch.log(1 - expanded_probs + 1e-8) * (1 - masks)
-        )
+        mask_probs = expanded_probs * masks + (1 - expanded_probs) * (1 - masks)
+        old_mask_probs = expanded_old_probs * masks + (1 - expanded_old_probs) * (1 - masks)
         
-        # Sum log probs across features for each sample and batch item
-        # [num_samples, batch_size]
-        log_probs_sum = log_probs.sum(dim=2)
-        
-        # Weight by normalized rewards and negate for loss
-        # [num_samples, batch_size]
-        weighted_log_probs = log_probs_sum * normalized_rewards
-        
-        # Mean over all samples and batch items
-        selector_loss = -weighted_log_probs.mean()
-        
-        # Calculate mean probability for each feature across the batch
-        mean_probs_per_feature = self.saved_probs.mean(dim=0)  # [sparse_dim]
+        # Calculate probability ratios (avoid division by zero)
+        # [num_samples, batch_size, sparse_dim]
+        ratios = mask_probs / (old_mask_probs + 1e-8)
 
-        unscaled_deadness_penalty = mean_probs_per_feature.std()
+        surr1 = ratios * advantages[:, :, None]
+        surr2 = torch.clamp(ratios, 1 - self.ppo_clip, 1 + self.ppo_clip) * advantages[:, :, None]
         
-        # Take the mean across all features
+        # Take minimum (clipped PPO objective)
+        # [num_samples, batch_size, sparse_dim]
+        selector_loss = torch.mean(-torch.minimum(surr1, surr2))
+        
+        # Deadness penalty
+        mean_probs_per_feature = self.saved_probs.mean(dim=0)  # [sparse_dim]
+        unscaled_deadness_penalty = (mean_probs_per_feature ** -1).mean()
         deadness_penalty = unscaled_deadness_penalty * self.prob_deadness_penalty
         
         # Add to selector loss
@@ -133,14 +134,15 @@ class RLSAE(ExperimentSAEBase):
         prob_deadness_penalty: float = 0.1,
         optimizer_type: str = "sparse_adam",
         optimizer_config: dict = None,
+        ppo_clip: float = 0.2,
+        optimize_steps: int = 1,
     ):
         self.L0_penalty = L0_penalty
-
         self.prob_bias = prob_bias
         self.prob_deadness_penalty = prob_deadness_penalty
-
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
+        self.ppo_clip = ppo_clip
 
         super().__init__(
             act_size=act_size,
@@ -154,6 +156,7 @@ class RLSAE(ExperimentSAEBase):
             act_squeeze=0,
             optimizer_type=optimizer_type,
             optimizer_config=optimizer_config,
+            optimize_steps=optimize_steps,
         )
 
     def _init_params(self):
@@ -165,6 +168,7 @@ class RLSAE(ExperimentSAEBase):
             num_samples=self.num_samples,
             prob_bias=self.prob_bias,
             prob_deadness_penalty=self.prob_deadness_penalty,
+            ppo_clip=self.ppo_clip,
         )
 
     @torch.no_grad()
@@ -249,3 +253,11 @@ class RLSAE(ExperimentSAEBase):
                 "feature_acts": feature_acts,
                 "reconstructed": reconstructed,
             }
+
+    def optimize(self, x, optimizer, iteration=None):
+        result = super().optimize(x, optimizer, iteration)
+        
+        # Reset old probs after all optimization steps
+        self.rl_selector.old_probs = None
+        
+        return result

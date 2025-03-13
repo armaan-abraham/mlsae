@@ -51,6 +51,7 @@ class DeepSAE(nn.Module):
         topk_decay_iter: int = None,
         act_squeeze: float = 0,
         weight_decay: float = 1e-3,
+        optimize_steps: int = 1,
     ):
         super().__init__()
 
@@ -63,7 +64,7 @@ class DeepSAE(nn.Module):
         self.dtype = DTYPES[enc_dtype]
         self.device = str(device)
         self.weight_decay = weight_decay
-        
+        self.optimize_steps = optimize_steps
         # Setup topk decay schedule
         self.topk_init = topk_init if topk_init is not None else topk
         self.topk_final = topk_final if topk_final is not None else topk
@@ -282,6 +283,32 @@ class DeepSAE(nn.Module):
             self.mse_count += 1
 
         return result
+    
+    def optimize(self, x, optimizer, iteration=None):
+        # Store the first result for returning
+        first_result = None
+        
+        # Run multiple optimization steps on the same batch
+        for step in range(self.optimize_steps):
+            # Get forward results
+            result = self.forward(x, iteration=iteration)
+            loss = result["loss"]
+            
+            # Save the first result to return
+            if step == 0:
+                first_result = result
+            
+            # Backpropagate
+            loss.backward()
+            
+            # Process gradients (gradient clipping, etc.)
+            self.process_gradients()
+            
+            # Update parameters
+            optimizer.step()
+            optimizer.zero_grad()
+        
+        return first_result
 
     def get_activation_stats(self):
         """

@@ -230,14 +230,10 @@ def task_train(
 
         acts = preprocess_acts(acts)
 
-        # Use dictionary return format
-        result = model(acts, iteration=n_iter)
+        result = model.optimize(acts, optimizer, iteration=n_iter)
+
         loss = result["loss"]
         feature_acts = result["feature_acts"]
-        loss.backward()
-        model.process_gradients()
-        optimizer.step()
-        optimizer.zero_grad()
 
         if start == 0:
             logging.info(
