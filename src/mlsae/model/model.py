@@ -125,7 +125,7 @@ class DeepSAE(nn.Module):
         in_dim = self.sparse_dim
 
         for i, dim in enumerate(self.decoder_dims):
-            linear_layer = self._create_linear_layer(in_dim, dim, normalize=True)
+            linear_layer = self._create_linear_layer(in_dim, dim)
             modules = [linear_layer, nn.ReLU()]
 
             if i == len(self.decoder_dims) - 1:
@@ -143,7 +143,7 @@ class DeepSAE(nn.Module):
             )
             in_dim = dim
 
-        final_layer = self._create_linear_layer(in_dim, self.act_size, normalize=True)
+        final_layer = self._create_linear_layer(in_dim, self.act_size)
         
         self.weight_decay_params.append(final_layer.weight)
         self.no_weight_decay_params.append(final_layer.bias)
@@ -183,9 +183,6 @@ class DeepSAE(nn.Module):
             enc_layer = encoder_linears[-(i + 1)]  # Start from last encoder
             dec_layer = decoder_linears[i]  # Start from first decoder
             dec_layer.weight.data.copy_(enc_layer.weight.data.t())
-            dec_layer.weight.data = dec_layer.weight.data / dec_layer.weight.data.norm(
-                dim=-1, keepdim=True
-            )
 
     def start_act_stat_tracking(self):
         """
@@ -199,7 +196,7 @@ class DeepSAE(nn.Module):
         self.mse_sum = 0.0
         self.mse_count = 0
 
-    def _create_linear_layer(self, in_dim, out_dim, normalize=False):
+    def _create_linear_layer(self, in_dim, out_dim):
         layer = nn.Linear(in_dim, out_dim)
         nn.init.kaiming_normal_(layer.weight)
         nn.init.zeros_(layer.bias)
@@ -231,13 +228,6 @@ class DeepSAE(nn.Module):
                     padding = torch.zeros_like(out)
                     padding[:, :resid.shape[1]] = resid
                     resid = out + padding
-
-            # Dead neuron counts are very sensitive to initial scaling. I have
-            # found that dividing by the L2 norm of the input activations helps
-            # for shallow SAEs. This division makes it so that, when combined
-            # with the layernorm, we initially divide by the L2 norm (as std and
-            # L2 norm are proportional).
-            resid = resid / torch.sqrt(torch.tensor(resid.shape[-1]))
         
         resid = self.preact_block(resid)
         
