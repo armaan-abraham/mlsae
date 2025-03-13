@@ -124,14 +124,22 @@ class DeepSAE(nn.Module):
         self.decoder_blocks = nn.ModuleList()
         in_dim = self.sparse_dim
 
-        for dim in self.decoder_dims:
+        for i, dim in enumerate(self.decoder_dims):
             linear_layer = self._create_linear_layer(in_dim, dim, normalize=True)
+            modules = [linear_layer, nn.ReLU()]
+
+            if i == len(self.decoder_dims) - 1:
+                layer_norm = nn.LayerNorm(dim)
+                
+                self.no_weight_decay_params.append(layer_norm.weight)
+                self.no_weight_decay_params.append(layer_norm.bias)
+                modules.append(layer_norm)
             
             self.weight_decay_params.append(linear_layer.weight)
             self.no_weight_decay_params.append(linear_layer.bias)
             
             self.decoder_blocks.append(
-                nn.Sequential(linear_layer, nn.ReLU())
+                nn.Sequential(*modules)
             )
             in_dim = dim
 
