@@ -226,9 +226,9 @@ class DeepSAE(nn.Module):
 
             # Dead neuron counts are very sensitive to initial scaling. I have
             # found that dividing by the L2 norm of the input activations helps
-            # for shallow SAEs. This division makes it so that we initially
-            # divide by the L2 norm in combination with the layernorm (as std
-            # and L2 norm are proportional).
+            # for shallow SAEs. This division makes it so that, when combined
+            # with the layernorm, we initially divide by the L2 norm (as std and
+            # L2 norm are proportional).
             resid = resid / torch.sqrt(torch.tensor(resid.shape[-1]))
         
         resid = self.preact_block(resid)
