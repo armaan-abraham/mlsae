@@ -332,7 +332,7 @@ class DeepSAE(nn.Module):
     @torch.no_grad()
     def process_gradients(self):
         # self.make_decoder_weights_unit_norm()
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=0.5)
 
     def _make_decoder_weights_unit_norm(self, weight):
         w_normed = weight / weight.norm(dim=0, keepdim=True)

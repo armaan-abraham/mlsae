@@ -104,7 +104,7 @@ class RLFeatureSelector(nn.Module):
         
         # Deadness penalty
         mean_probs_per_feature = self.saved_probs.mean(dim=0)  # [sparse_dim]
-        unscaled_deadness_penalty = (mean_probs_per_feature ** -1).mean()
+        unscaled_deadness_penalty = ((mean_probs_per_feature + 1e-8) ** -1).mean()
         deadness_penalty = unscaled_deadness_penalty * self.prob_deadness_penalty
         
         # Add to selector loss
