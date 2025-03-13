@@ -236,14 +236,9 @@ class DeepSAE(nn.Module):
         return resid
     
     def _decode(self, feature_acts):
-        resid = self.decoder_blocks[0](feature_acts)
-
-        if len(self.decoder_blocks) > 1:
-            for block in self.decoder_blocks[1:-1]:
-                resid = block(resid) + resid
-            
-            resid = self.decoder_blocks[-1](resid)
-
+        resid = feature_acts
+        for block in self.decoder_blocks:
+            resid = block(resid)
         return resid
 
     def _forward(self, x, iteration=None):

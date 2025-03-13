@@ -263,3 +263,19 @@ class RLSAE(ExperimentSAEBase):
         self.rl_selector.old_probs = None
         
         return result
+
+    def get_config_dict(self):
+        # Get base configuration from parent class
+        config = super().get_config_dict()
+        
+        # Add RL-specific parameters
+        config.update({
+            "num_samples": self.num_samples,
+            "L0_penalty": self.L0_penalty,
+            "rl_loss_weight": self.rl_loss_weight,
+            "prob_bias": self.prob_bias,
+            "prob_deadness_penalty": self.prob_deadness_penalty,
+            "ppo_clip": self.ppo_clip,
+        })
+        
+        return config
