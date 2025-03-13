@@ -9,9 +9,9 @@ class ExperimentSAERL1_0(RLSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[1],
+            encoder_dim_mults=[1, 1],
             sparse_dim_mult=16,
-            decoder_dim_mults=[1],
+            decoder_dim_mults=[1, 1],
             device=device,
             num_samples=10,
             L0_penalty=1e-5,
