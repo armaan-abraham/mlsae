@@ -136,6 +136,7 @@ class RLSAE(ExperimentSAEBase):
         optimizer_config: dict = None,
         ppo_clip: float = 0.2,
         optimize_steps: int = 1,
+        weight_decay: float = 0,
     ):
         self.L0_penalty = L0_penalty
         self.prob_bias = prob_bias
@@ -154,7 +155,7 @@ class RLSAE(ExperimentSAEBase):
             enc_dtype=enc_dtype,
             device=device,
             topk=-1,
-            weight_decay=0,
+            weight_decay=weight_decay,
             act_squeeze=0,
             optimizer_type=optimizer_type,
             optimizer_config=optimizer_config,
