@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from mlsae.model.rl_sae import RLSAE
 
-class ExperimentSAERL2(RLSAE):
+class ExperimentSAERL1_0(RLSAE):
     def __init__(self, act_size: int, device: str = "cpu"):
         super().__init__(
             act_size=act_size,
@@ -17,7 +17,7 @@ class ExperimentSAERL2(RLSAE):
             L0_penalty=1e-5,
             rl_loss_weight=50,
             prob_bias=-4,
-            prob_deadness_penalty=1e-6,
+            prob_deadness_penalty=2e-6,
             optimizer_type="sparse_adam",
             optimizer_config={
                 "lr": 5e-4,
@@ -25,4 +25,3 @@ class ExperimentSAERL2(RLSAE):
             optimize_steps=3,
             ppo_clip=0.2,
         )
-
