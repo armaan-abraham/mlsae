@@ -20,10 +20,10 @@ class ExperimentSAERL1_0(RLSAE):
             prob_deadness_penalty=2e-6,
             optimizer_type="sparse_adam",
             optimizer_config={
-                "lr": 5e-4,
+                "lr": 4e-4,
             },
             optimize_steps=3,
-            ppo_clip=0.2,
+            ppo_clip=0,
         )
 
 

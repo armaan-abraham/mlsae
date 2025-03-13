@@ -1,3 +1,4 @@
+from networkx import radius
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -75,36 +76,35 @@ class RLFeatureSelector(nn.Module):
         assert self.old_probs is not None
 
         num_samples, batch_size, _ = masks.shape
+
+        eps = 1e-6
         
         # Normalize rewards across samples for each batch item
         reward_means = rewards.mean(dim=0, keepdim=True)  # [1, batch_size]
-        reward_stds = rewards.std(dim=0, keepdim=True) + 1e-8  # [1, batch_size]
+        reward_stds = rewards.std(dim=0, keepdim=True) + eps # [1, batch_size]
         advantages = (rewards - reward_means) / reward_stds  # [num_samples, batch_size]
         
         # Expand current probs and old probs for all samples
         # [batch_size, sparse_dim] -> [num_samples, batch_size, sparse_dim]
         expanded_probs = self.saved_probs.unsqueeze(0).expand(num_samples, -1, -1)
-        expanded_old_probs = self.old_probs.unsqueeze(0).expand(num_samples, -1, -1)
-        
-        # Calculate probabilities of masks under current and old policies
-        # [num_samples, batch_size, sparse_dim]
-        mask_probs = expanded_probs * masks + (1 - expanded_probs) * (1 - masks)
-        old_mask_probs = expanded_old_probs * masks + (1 - expanded_old_probs) * (1 - masks)
-        
-        # Calculate probability ratios (avoid division by zero)
-        # [num_samples, batch_size, sparse_dim]
-        ratios = mask_probs / (old_mask_probs + 1e-8)
 
-        surr1 = ratios * advantages[:, :, None]
-        surr2 = torch.clamp(ratios, 1 - self.ppo_clip, 1 + self.ppo_clip) * advantages[:, :, None]
+        if torch.any(expanded_probs > 1) or torch.any(expanded_probs < 0):
+            # Print problematic probability values for debugging
+            invalid_probs = expanded_probs[expanded_probs > 1]
+            if len(invalid_probs) > 0:
+                raise ValueError(f"ERROR: Found {len(invalid_probs)} probabilities > 1. Max: {invalid_probs.max().item()}")
+            
+            invalid_probs = expanded_probs[expanded_probs < 0]
+            if len(invalid_probs) > 0:
+                raise ValueError(f"ERROR: Found {len(invalid_probs)} probabilities < 0. Min: {invalid_probs.min().item()}")
         
-        # Take minimum (clipped PPO objective)
-        # [num_samples, batch_size, sparse_dim]
-        selector_loss = torch.mean(-torch.minimum(surr1, surr2))
+        log_mask_probs = torch.log(expanded_probs + eps) * masks + torch.log(1 - expanded_probs + eps) * (1 - masks)
+
+        selector_loss = -torch.mean(log_mask_probs * advantages[:, :, None])
         
         # Deadness penalty
         mean_probs_per_feature = self.saved_probs.mean(dim=0)  # [sparse_dim]
-        unscaled_deadness_penalty = ((mean_probs_per_feature + 1e-8) ** -1).mean()
+        unscaled_deadness_penalty = ((mean_probs_per_feature + eps) ** -1).mean()
         deadness_penalty = unscaled_deadness_penalty * self.prob_deadness_penalty
         
         # Add to selector loss
@@ -142,7 +142,9 @@ class RLSAE(ExperimentSAEBase):
         self.prob_deadness_penalty = prob_deadness_penalty
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
+        assert ppo_clip == 0, "PPO clipping not implemented"
         self.ppo_clip = ppo_clip
+
 
         super().__init__(
             act_size=act_size,
