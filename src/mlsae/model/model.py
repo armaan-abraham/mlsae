@@ -183,6 +183,9 @@ class DeepSAE(nn.Module):
             enc_layer = encoder_linears[-(i + 1)]  # Start from last encoder
             dec_layer = decoder_linears[i]  # Start from first decoder
             dec_layer.weight.data.copy_(enc_layer.weight.data.t())
+            dec_layer.weight.data = dec_layer.weight.data / dec_layer.weight.data.norm(
+                dim=-1, keepdim=True
+            )
 
     def start_act_stat_tracking(self):
         """
