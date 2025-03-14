@@ -15,7 +15,7 @@ class ExperimentSAERL1_0(RLSAE):
             device=device,
             num_samples=10,
             L0_penalty=1e-5,
-            rl_loss_weight=0.2,
+            rl_loss_weight=0.4,
             prob_bias=-4,
             prob_deadness_penalty=2e-6,
             optimizer_type="sparse_adam",
@@ -23,7 +23,7 @@ class ExperimentSAERL1_0(RLSAE):
                 "lr": 5e-4,
             },
             optimize_steps=3,
-            ppo_clip=0,
+            ppo_clip=0.05,
         )
 
 

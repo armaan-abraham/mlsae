@@ -259,10 +259,86 @@ class RLSAE(ExperimentSAEBase):
             }
 
     def optimize(self, x, optimizer, iteration=None):
-        result = super().optimize(x, optimizer, iteration)
+        # TODO: think about optimizer state with different iterations optimizing different things
+
+        # Store initial probabilities for probability difference calculation
+        with torch.no_grad():
+            preacts = self._get_preacts(x)
+            initial_probs = self.rl_selector.get_probs(preacts.detach())
+        
+        # Variable to store the final result
+        result = None
+        
+        # Run multiple optimization steps
+        for step in range(self.optimize_steps):
+            # Set flag for final step
+            is_final_step = (step == self.optimize_steps - 1)
+            
+            # Forward pass with RL sampling
+            preacts = self._get_preacts(x)
+            masks = self.rl_selector.sample_masks(preacts)
+            
+            with torch.no_grad():
+                per_sample_rewards = self._evaluate_masks(x, preacts, masks)
+                
+                # For each sample, pick the mask with maximum reward
+                best_indices = per_sample_rewards.argmax(dim=0)
+                batch_size = x.shape[0]
+                best_masks = masks[best_indices, torch.arange(batch_size)]
+            
+            # Apply best masks and get feature activations
+            best_feature_acts = self.rl_selector.get_feature_mags(preacts, best_masks)
+            
+            # RL update
+            selector_loss = self.rl_selector.update_selector(masks, per_sample_rewards)
+            weighted_selector_loss = selector_loss * self.rl_loss_weight
+            
+            # Only include MSE loss in the final step
+            if is_final_step:
+                best_reconstructed = self._decode(best_feature_acts)
+                mse_loss = (best_reconstructed - x).pow(2).mean()
+                final_loss = mse_loss + weighted_selector_loss
+                
+                # Save the final step result
+                result = {
+                    "loss": final_loss,
+                    "mse_loss": mse_loss,
+                    "feature_acts": best_feature_acts,
+                    "reconstructed": best_reconstructed,
+                    "selector_loss": selector_loss,
+                }
+            else:
+                final_loss = weighted_selector_loss
+            
+            # Backpropagate
+            final_loss.backward()
+            
+            # Process gradients
+            self.process_gradients()
+            
+            # Update parameters
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            # Update old_probs for next step, except after the final step
+            if not is_final_step:
+                self.rl_selector.old_probs = self.rl_selector.saved_probs.detach()
         
         # Reset old probs after all optimization steps
         self.rl_selector.old_probs = None
+        
+        # Calculate probability differences for logging
+        with torch.no_grad():
+            preacts = self._get_preacts(x)
+            updated_probs = self.rl_selector.get_probs(preacts.detach())
+            
+            # Calculate differences
+            prob_diff = torch.abs(updated_probs - initial_probs) / (initial_probs + 1e-8)
+            
+            result["prob_diff_mean"] = prob_diff.mean().item()
+            result["prob_diff_min"] = prob_diff.min().item() 
+            result["prob_diff_max"] = prob_diff.max().item()
+            result["prob_diff_std"] = prob_diff.std().item()
         
         return result
 
