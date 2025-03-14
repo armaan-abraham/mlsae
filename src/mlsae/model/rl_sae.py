@@ -265,6 +265,12 @@ class RLSAE(ExperimentSAEBase):
         with torch.no_grad():
             preacts = self._get_preacts(x)
             initial_probs = self.rl_selector.get_probs(preacts.detach())
+            
+            # Calculate Gini coefficient of preacts
+            sorted_preacts = torch.sort(preacts.flatten())[0]
+            n = sorted_preacts.size(0)
+            index = torch.arange(1, n + 1, device=preacts.device)
+            gini = (2 * (index * sorted_preacts).sum() / (n * sorted_preacts.sum())) - (n + 1) / n
         
         # Variable to store the final result
         result = None
@@ -339,6 +345,7 @@ class RLSAE(ExperimentSAEBase):
             result["prob_diff_min"] = prob_diff.min().item() 
             result["prob_diff_max"] = prob_diff.max().item()
             result["prob_diff_std"] = prob_diff.std().item()
+            result["preacts_gini"] = gini.item()  # Add Gini coefficient to result
         
         return result
 
