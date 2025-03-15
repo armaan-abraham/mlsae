@@ -16,20 +16,17 @@ class RLFeatureSelector(nn.Module):
     based on probabilities from a sigmoid activation.
     """
 
-    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, base_L0=30, action_collapse_penalty_lambda=1e-1, ppo_clip=0.2):
+    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, base_L0=30, action_collapse_penalty_lambda=1e-1):
         super().__init__()
         self.sparse_dim = sparse_dim
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
         self.base_L0 = base_L0
         self.action_collapse_penalty_lambda = action_collapse_penalty_lambda
-        self.ppo_clip = ppo_clip  # PPO clipping parameter
 
         # Compute the base bias from the base L0
         self.base_prob = base_L0 / sparse_dim
         self.base_bias = np.log(self.base_prob / (1 - self.base_prob))
-        print(f"Base bias: {self.base_bias}")
-        print(f"Base prob: {self.base_prob}")
 
         # Separate bias and scalar for magnitudes
         self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
@@ -129,7 +126,6 @@ class RLSAE(ExperimentSAEBase):
         rl_loss_weight: float = 1.0,
         optimizer_type: str = "sparse_adam",
         optimizer_config: dict = None,
-        ppo_clip: float = 0.2,
         optimize_steps: int = 1,
         weight_decay: float = 0,
 
@@ -139,8 +135,6 @@ class RLSAE(ExperimentSAEBase):
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
-        assert ppo_clip == 0, "PPO clipping not implemented"
-        self.ppo_clip = ppo_clip
 
         self.base_L0 = base_L0
         self.action_collapse_penalty_lambda = action_collapse_penalty_lambda
@@ -168,7 +162,6 @@ class RLSAE(ExperimentSAEBase):
             sparse_dim=self.sparse_dim,
             L0_penalty=self.L0_penalty,
             num_samples=self.num_samples,
-            ppo_clip=self.ppo_clip,
             base_L0=self.base_L0,
             action_collapse_penalty_lambda=self.action_collapse_penalty_lambda,
         )
@@ -292,7 +285,6 @@ class RLSAE(ExperimentSAEBase):
             "rl_loss_weight": self.rl_loss_weight,
             "base_L0": self.base_L0,
             "action_collapse_penalty_lambda": self.action_collapse_penalty_lambda,
-            "ppo_clip": self.ppo_clip,
         })
         
         return config
