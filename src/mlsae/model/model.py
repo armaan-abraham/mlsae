@@ -117,7 +117,6 @@ class DeepSAE(nn.Module):
 
         self.preact_block = torch.nn.Sequential(
             sparse_layer,
-            nn.ReLU(),
         )
 
     def _init_decoder_params(self):

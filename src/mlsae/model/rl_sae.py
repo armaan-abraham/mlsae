@@ -1,5 +1,6 @@
 from networkx import radius
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -26,8 +27,9 @@ class RLFeatureSelector(nn.Module):
 
         # Compute the base bias from the base L0
         self.base_prob = base_L0 / sparse_dim
-        self.base_bias = torch.log(self.base_prob / (1 - self.base_prob))
+        self.base_bias = np.log(self.base_prob / (1 - self.base_prob))
         print(f"Base bias: {self.base_bias}")
+        print(f"Base prob: {self.base_prob}")
 
         # Separate bias and scalar for magnitudes
         self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
@@ -64,7 +66,7 @@ class RLFeatureSelector(nn.Module):
         return masks
 
     def get_feature_mags(self, x, mask):
-        magnitudes = F.relu(x * self.magnitude_scalar.unsqueeze(0) + self.magnitude_bias) * mask
+        magnitudes = F.relu(x * self.magnitude_scalar + self.magnitude_bias) * mask
         return magnitudes
 
     def update_selector(self, masks, rewards):
@@ -73,7 +75,7 @@ class RLFeatureSelector(nn.Module):
         masks: [num_samples, batch_size, sparse_dim] - all sampled masks
         rewards: [num_samples, batch_size] - rewards for each mask
         """
-        assert hasattr(self, "saved_probs")
+        assert hasattr(self, "saved_prebias_logits")
 
         num_samples, batch_size, _ = masks.shape
 
@@ -104,7 +106,7 @@ class RLFeatureSelector(nn.Module):
         selector_loss = -torch.mean(log_mask_probs * advantages[:, :, None])
 
         # Compute penalty for logit deviation from base prob
-        logit_deviation = self.saved_prebias_logits.pow(2).mean()
+        logit_deviation = (self.saved_prebias_logits).abs().mean()
         action_collapse_penalty = self.action_collapse_penalty_lambda * logit_deviation
         
         # Add to selector loss
@@ -114,11 +116,6 @@ class RLFeatureSelector(nn.Module):
 
 
 class RLSAE(ExperimentSAEBase):
-    """
-    A Sparse Autoencoder that uses a sample-and-select-best approach
-    for feature selection.
-    """
-
     def __init__(
         self,
         act_size: int,
@@ -262,15 +259,25 @@ class RLSAE(ExperimentSAEBase):
     def optimize(self, x, optimizer, iteration=None):
         with torch.no_grad():
             preacts = self._get_preacts(x)
+            probs = self.rl_selector.get_probs(preacts)
             
-            # Calculate Gini coefficient of preacts
-            sorted_preacts = torch.sort(preacts.flatten())[0]
-            n = sorted_preacts.size(0)
+            sorted_probs = torch.sort(probs.flatten())[0]
+            n = sorted_probs.size(0)
             index = torch.arange(1, n + 1, device=preacts.device)
-            gini = (2 * (index * sorted_preacts).sum() / (n * sorted_preacts.sum())) - (n + 1) / n
+            gini = (2 * (index * sorted_probs).sum() / (n * sorted_probs.sum())) - (n + 1) / n
+
+            avg_prob = probs.mean()
+            deviation = (probs - self.rl_selector.base_prob).pow(2).mean()
+            
 
         result = super().optimize(x, optimizer, iteration)
-        result["preacts_gini"] = gini.item()
+        result["gini"] = gini.item()
+        result["prob_penalty"] = deviation.item()
+        result["prob_mean"] = avg_prob.item()
+        result["prob_min"] = probs.min().item()
+        result["prob_max"] = probs.max().item()
+        result["prob_std"] = probs.std().item()
+
         
         return result
 
@@ -283,8 +290,8 @@ class RLSAE(ExperimentSAEBase):
             "num_samples": self.num_samples,
             "L0_penalty": self.L0_penalty,
             "rl_loss_weight": self.rl_loss_weight,
-            "prob_bias": self.prob_bias,
-            "prob_deadness_penalty": self.prob_deadness_penalty,
+            "base_L0": self.base_L0,
+            "action_collapse_penalty_lambda": self.action_collapse_penalty_lambda,
             "ppo_clip": self.ppo_clip,
         })
         
