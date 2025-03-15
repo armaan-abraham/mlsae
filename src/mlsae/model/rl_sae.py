@@ -15,15 +15,19 @@ class RLFeatureSelector(nn.Module):
     based on probabilities from a sigmoid activation.
     """
 
-    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, prob_bias=-4, prob_deadness_penalty=0.1, ppo_clip=0.2):
+    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, base_L0=30, action_collapse_penalty_lambda=1e-1, ppo_clip=0.2):
         super().__init__()
         self.sparse_dim = sparse_dim
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
-        self.prob_bias = prob_bias
-        self.prob_deadness_penalty = prob_deadness_penalty
+        self.base_L0 = base_L0
+        self.action_collapse_penalty_lambda = action_collapse_penalty_lambda
         self.ppo_clip = ppo_clip  # PPO clipping parameter
-        self.old_probs = None  # Store old probabilities for PPO
+
+        # Compute the base bias from the base L0
+        self.base_prob = base_L0 / sparse_dim
+        self.base_bias = torch.log(self.base_prob / (1 - self.base_prob))
+        print(f"Base bias: {self.base_bias}")
 
         # Separate bias and scalar for magnitudes
         self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
@@ -32,7 +36,7 @@ class RLFeatureSelector(nn.Module):
     def get_probs(self, x):
         """Get activation probabilities from raw encoder outputs"""
         # Add selection bias to inputs for the probability calculation
-        return torch.sigmoid(x + self.prob_bias)
+        return torch.sigmoid(x + self.base_bias)
 
     def sample_mask(self, probs):
         """Sample a binary mask from probabilities"""
@@ -49,11 +53,11 @@ class RLFeatureSelector(nn.Module):
         """Generate multiple mask samples for evaluation"""
         if num_samples is None:
             num_samples = self.num_samples
+            
+        # Store for learning
+        self.saved_prebias_logits = x
 
         probs = self.get_probs(x)
-
-        # Store for learning
-        self.saved_probs = probs
 
         # Sample multiple masks: shape [num_samples, batch_size, sparse_dim]
         masks = torch.stack([self.sample_mask(probs) for _ in range(num_samples)])
@@ -82,7 +86,8 @@ class RLFeatureSelector(nn.Module):
         
         # Expand current probs and old probs for all samples
         # [batch_size, sparse_dim] -> [num_samples, batch_size, sparse_dim]
-        expanded_probs = self.saved_probs.unsqueeze(0).expand(num_samples, -1, -1)
+        saved_probs = self.get_probs(self.saved_prebias_logits)
+        expanded_probs = saved_probs.unsqueeze(0).expand(num_samples, -1, -1)
 
         if torch.any(expanded_probs > 1) or torch.any(expanded_probs < 0):
             # Print problematic probability values for debugging
@@ -97,14 +102,13 @@ class RLFeatureSelector(nn.Module):
         log_mask_probs = torch.log(expanded_probs + eps) * masks + torch.log(1 - expanded_probs + eps) * (1 - masks)
 
         selector_loss = -torch.mean(log_mask_probs * advantages[:, :, None])
-        
-        # Deadness penalty
-        mean_probs_per_feature = self.saved_probs.mean(dim=0)  # [sparse_dim]
-        unscaled_deadness_penalty = ((mean_probs_per_feature + eps) ** -1).mean()
-        deadness_penalty = unscaled_deadness_penalty * self.prob_deadness_penalty
+
+        # Compute penalty for logit deviation from base prob
+        logit_deviation = self.saved_prebias_logits.pow(2).mean()
+        action_collapse_penalty = self.action_collapse_penalty_lambda * logit_deviation
         
         # Add to selector loss
-        selector_loss = selector_loss + deadness_penalty
+        selector_loss = selector_loss + action_collapse_penalty
         
         return selector_loss
 
@@ -126,21 +130,23 @@ class RLSAE(ExperimentSAEBase):
         num_samples: int = 3,
         L0_penalty: float = 1e-2,
         rl_loss_weight: float = 1.0,
-        prob_bias: float = -4,
-        prob_deadness_penalty: float = 0.1,
         optimizer_type: str = "sparse_adam",
         optimizer_config: dict = None,
         ppo_clip: float = 0.2,
         optimize_steps: int = 1,
         weight_decay: float = 0,
+
+        base_L0: float = 30,
+        action_collapse_penalty_lambda: float = 1e-1,
     ):
         self.L0_penalty = L0_penalty
-        self.prob_bias = prob_bias
-        self.prob_deadness_penalty = prob_deadness_penalty
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
         assert ppo_clip == 0, "PPO clipping not implemented"
         self.ppo_clip = ppo_clip
+
+        self.base_L0 = base_L0
+        self.action_collapse_penalty_lambda = action_collapse_penalty_lambda
 
 
         super().__init__(
@@ -165,9 +171,9 @@ class RLSAE(ExperimentSAEBase):
             sparse_dim=self.sparse_dim,
             L0_penalty=self.L0_penalty,
             num_samples=self.num_samples,
-            prob_bias=self.prob_bias,
-            prob_deadness_penalty=self.prob_deadness_penalty,
             ppo_clip=self.ppo_clip,
+            base_L0=self.base_L0,
+            action_collapse_penalty_lambda=self.action_collapse_penalty_lambda,
         )
 
     @torch.no_grad()
