@@ -54,9 +54,6 @@ class RLFeatureSelector(nn.Module):
 
         # Store for learning
         self.saved_probs = probs
-        
-        if self.old_probs is None:
-            self.old_probs = probs.detach()
 
         # Sample multiple masks: shape [num_samples, batch_size, sparse_dim]
         masks = torch.stack([self.sample_mask(probs) for _ in range(num_samples)])
@@ -73,7 +70,6 @@ class RLFeatureSelector(nn.Module):
         rewards: [num_samples, batch_size] - rewards for each mask
         """
         assert hasattr(self, "saved_probs")
-        assert self.old_probs is not None
 
         num_samples, batch_size, _ = masks.shape
 
@@ -258,10 +254,17 @@ class RLSAE(ExperimentSAEBase):
             }
 
     def optimize(self, x, optimizer, iteration=None):
+        with torch.no_grad():
+            preacts = self._get_preacts(x)
+            
+            # Calculate Gini coefficient of preacts
+            sorted_preacts = torch.sort(preacts.flatten())[0]
+            n = sorted_preacts.size(0)
+            index = torch.arange(1, n + 1, device=preacts.device)
+            gini = (2 * (index * sorted_preacts).sum() / (n * sorted_preacts.sum())) - (n + 1) / n
+
         result = super().optimize(x, optimizer, iteration)
-        
-        # Reset old probs after all optimization steps
-        self.rl_selector.old_probs = None
+        result["preacts_gini"] = gini.item()
         
         return result
 
