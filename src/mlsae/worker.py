@@ -1,9 +1,11 @@
 import enum
 import logging
 
+from networkx import cut_size
 import torch
 import torch.multiprocessing as mp
 import transformer_lens
+import einops
 
 from mlsae.config import DEVICE_COUNT, DTYPES, data_cfg, train_cfg
 from mlsae.data import stream_training_chunks
@@ -115,9 +117,13 @@ def generate_acts_from_tokens(
                 )
                 acts = cache.cache_dict[data_cfg.act_name]
                 assert (
-                    acts.shape[-1] == data_cfg.act_size
-                ), f"Expected {data_cfg.act_size} act size, got {acts.shape[-1]}"
-                acts = acts.reshape(acts.shape[0] * acts.shape[1], data_cfg.act_size)
+                    acts.shape[-1] == data_cfg.act_size_full
+                ), f"Expected {data_cfg.act_size_full} act size, got {acts.shape[-1]}"
+                assert acts.shape == (data_cfg.llm_batch_size_seqs, data_cfg.seq_len, data_cfg.act_size_full)
+                acts = einops.rearrange(acts, "batch seq (act_chunk act_size) -> (batch seq act_chunk) act_size", act_size=data_cfg.act_size)
+                # We chunk up the original llm activations and treat these
+                # chunks as individual SAE inputs for quicker experimentation
+                assert acts.shape == (data_cfg.llm_batch_size_seqs * data_cfg.seq_len * data_cfg.act_size_full_multiple, data_cfg.act_size)
                 all_acts.append(acts)
 
     return torch.cat(all_acts, dim=0)

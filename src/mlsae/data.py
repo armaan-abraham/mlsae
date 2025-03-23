@@ -189,7 +189,7 @@ def stream_training_chunks(
     )
 
     dataset_iter = dataset_iter.batch(
-        act_block_size_seqs or data_cfg.act_block_size_seqs
+        act_block_size_seqs or data_cfg.act_block_size_metaseqs
     )
 
     for batch in dataset_iter:

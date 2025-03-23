@@ -19,7 +19,7 @@ class SharedMemory:
         self.shared_memory = {
             "act_blocks": [
                 torch.zeros(
-                    (data_cfg.act_block_size_entries, data_cfg.act_size),
+                    (data_cfg.act_block_size_tokens, data_cfg.act_size),
                     dtype=DTYPES[data_cfg.sae_dtype],
                 ).share_memory_()
                 for _ in range(n_act_blocks)
