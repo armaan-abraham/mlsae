@@ -9,7 +9,7 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     sae_batch_size_entries: int = 65536
-    act_block_size_sae_batch_size_mult: int = 512
+    act_block_size_sae_batch_size_mult: int = 128
 
     seq_len: int = 16
     llm_batch_size_seqs: int = 500
@@ -35,10 +35,6 @@ class DataConfig:
     @property
     def act_block_size_tokens(self) -> int:
         return int(self.sae_batch_size_tokens * self.act_block_size_sae_batch_size_mult)
-    
-    @property
-    def act_size_full(self) -> int:
-        return self.act_size * self.act_size_full_multiple
 
     @property
     def act_block_size_entries(self) -> int:
@@ -56,19 +52,22 @@ class DataConfig:
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
 
+data_cfg = DataConfig()
 
 @dataclass
 class TrainConfig:
-    num_tokens: int = int(1e9)
+    num_entries: int = int(1e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = False
 
     measure_dead_over_n_batches: int = 15
 
+    @property
+    def num_tokens(self) -> int:
+        return self.num_entries // data_cfg.act_size_full_multiple
 
 train_cfg = TrainConfig()
-data_cfg = DataConfig()
 
 assert data_cfg.act_block_size_tokens % data_cfg.seq_len == 0
 assert data_cfg.sae_batch_size_tokens % data_cfg.act_size_full_multiple == 0

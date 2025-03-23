@@ -13,6 +13,7 @@ from mlsae.model import DeepSAE
 from mlsae.shared_memory import SharedMemory
 
 import os
+
 class TaskType(enum.Enum):
     TOKENS = 0
     ACTS = 1
@@ -116,17 +117,26 @@ def generate_acts_from_tokens(
                     return_cache_object=True,
                 )
                 acts = cache.cache_dict[data_cfg.act_name]
-                assert (
-                    acts.shape[-1] == data_cfg.act_size_full
-                ), f"Expected {data_cfg.act_size_full} act size, got {acts.shape[-1]}"
-                assert acts.shape == (data_cfg.llm_batch_size_seqs, data_cfg.seq_len, data_cfg.act_size_full)
+                assert acts.shape[1:3] == (data_cfg.seq_len, data_cfg.act_size_full), f"Expected shape ({data_cfg.seq_len}, {data_cfg.act_size_full}), got {acts.shape[1:3]}"
+                batch_size_seqs = acts.shape[0]
+                
+                alt_acts = einops.rearrange(acts, "batch seq (act_chunk act_size) -> batch seq act_chunk act_size", act_size=data_cfg.act_size, act_chunk=data_cfg.act_size_full_multiple)
+                alt_acts = einops.rearrange(alt_acts, "batch seq act_chunk act_size -> (batch seq act_chunk) act_size", act_size=data_cfg.act_size)
+
                 acts = einops.rearrange(acts, "batch seq (act_chunk act_size) -> (batch seq act_chunk) act_size", act_size=data_cfg.act_size)
+
+                assert torch.allclose(acts, alt_acts)
+
                 # We chunk up the original llm activations and treat these
                 # chunks as individual SAE inputs for quicker experimentation
-                assert acts.shape == (data_cfg.llm_batch_size_seqs * data_cfg.seq_len * data_cfg.act_size_full_multiple, data_cfg.act_size)
+                assert acts.shape == (batch_size_seqs * data_cfg.seq_len * data_cfg.act_size_full_multiple, data_cfg.act_size)
                 all_acts.append(acts)
+        
+    
 
-    return torch.cat(all_acts, dim=0)
+    result = torch.cat(all_acts, dim=0)
+    assert result.shape == (data_cfg.act_block_size_seqs * data_cfg.seq_len * data_cfg.act_size_full_multiple, data_cfg.act_size)
+    return result
 
 
 def task_generate(
@@ -189,6 +199,9 @@ def init_optimizer(model: DeepSAE):
     elif optimizer_type == "sparse_adam":
         from mlsae.optimizer.sparse_adam import SparseAdam
         return SparseAdam(model.parameters(), **optimizer_config)
+    elif optimizer_type == "SGD":
+        from torch.optim import SGD
+        return SGD(model.parameters(), **optimizer_config)
     else:
         raise ValueError(f"Unknown optimizer type: {optimizer_type}")
 
