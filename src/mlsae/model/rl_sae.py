@@ -269,8 +269,37 @@ class RLSAE(ExperimentSAEBase):
             avg_prob = probs.mean()
             deviation = (probs - self.rl_selector.base_prob).pow(2).mean()
             
+        # Store the first result for returning
+        first_result = None
+        
+        # Run multiple optimization steps on the same batch
+        for step in range(self.optimize_steps):
+            # Get forward results
+            result = self.forward(x, iteration=iteration)
+            loss = result["loss"]
+            
+            # Save the first result to return
+            if step == 0:
+                first_result = result
+            
+            # Backpropagate
+            loss.backward()
+            
+            # Process gradients (gradient clipping, etc.)
+            self.process_gradients()
+            
+            # Update parameters
+            optimizer.step()
+            optimizer.zero_grad()
+        
+        first_result["optimizer_step"] = optimizer.get_step()
+        optimizer_exp_avg = optimizer.state[list(optimizer.state.keys())[0]]["exp_avg"]
+        first_result["optimizer_exp_avg_mean"] = optimizer_exp_avg.mean()
+        optimizer_exp_avg_sq = optimizer.state[list(optimizer.state.keys())[0]]["exp_avg_sq"]
+        first_result["optimizer_exp_avg_sq_mean"] = optimizer_exp_avg_sq.mean()
+        
+        result = first_result
 
-        result = super().optimize(x, optimizer, iteration)
         result["gini"] = gini.item()
         result["prob_penalty"] = deviation.item()
         result["prob_mean"] = avg_prob.item()
