@@ -224,8 +224,8 @@ def task_train(
     act_block = shared_memory["act_blocks"][act_block_idx]
 
     assert (
-        act_block.shape[0] == data_cfg.act_block_size_tokens
-    ), f"Expected {data_cfg.act_block_size_tokens} tokens, got {act_block.shape[0]}"
+        act_block.shape == (data_cfg.act_block_size_entries, data_cfg.act_size)
+    ), f"Expected shape ({data_cfg.act_block_size_entries}, {data_cfg.act_size}), got {act_block.shape}"
 
     metrics_list = []
 

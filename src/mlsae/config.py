@@ -8,8 +8,8 @@ import transformer_lens
 @dataclass
 class DataConfig:
     seed: int = 49
-    sae_batch_size_tokens: int = 65536
-    act_block_size_sae_batch_size_mult: int = 128
+    sae_batch_size_entries: int = 65536
+    act_block_size_sae_batch_size_mult: int = 512
 
     seq_len: int = 16
     llm_batch_size_seqs: int = 500
@@ -19,14 +19,18 @@ class DataConfig:
     tokenizer_name: str = "EleutherAI/gpt-neox-20b"
     site: str = "resid_pre"
     layer: int = 1
-    act_size: int = 128
+    act_size_full: int = 128
     act_size_full_multiple: int = 4
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 20
 
     n_token_blocks: int = 5
-    n_act_blocks: int = 2
+    n_act_blocks: int = 1
+
+    @property
+    def act_size(self) -> int:
+        return self.act_size_full // self.act_size_full_multiple
 
     @property
     def act_block_size_tokens(self) -> int:
@@ -37,16 +41,16 @@ class DataConfig:
         return self.act_size * self.act_size_full_multiple
 
     @property
-    def act_block_size_metatokens(self) -> int:
-        return self.act_block_size_tokens // self.act_size_full_multiple
+    def act_block_size_entries(self) -> int:
+        return self.act_block_size_tokens * self.act_size_full_multiple
 
     @property
     def act_block_size_seqs(self) -> int:
         return self.act_block_size_tokens // self.seq_len
-    
+
     @property
-    def act_block_size_metaseqs(self) -> int:
-        return self.act_block_size_metatokens // self.seq_len
+    def sae_batch_size_tokens(self) -> int:
+        return self.sae_batch_size_entries // self.act_size_full_multiple
 
     @property
     def act_name(self) -> str:
@@ -68,7 +72,7 @@ data_cfg = DataConfig()
 
 assert data_cfg.act_block_size_tokens % data_cfg.seq_len == 0
 assert data_cfg.sae_batch_size_tokens % data_cfg.act_size_full_multiple == 0
-assert (data_cfg.act_block_size_metatokens / data_cfg.act_block_size_tokens) == data_cfg.act_size_full_multiple
+assert data_cfg.act_block_size_seqs == data_cfg.sae_batch_size_entries / data_cfg.act_size_full_multiple / data_cfg.seq_len * data_cfg.act_block_size_sae_batch_size_mult
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
