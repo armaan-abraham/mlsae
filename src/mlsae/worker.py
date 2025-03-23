@@ -231,7 +231,6 @@ def task_train(
     model = shared_memory["models"][model_idx].clone()
     model.to(device)
     optimizer = init_optimizer(model)
-    optimizer.copy_state_from(shared_memory["optimizers"][model_idx])
     act_freq_history = shared_memory["act_freq_history"][model_idx].to(device)
     n_iter = shared_memory["n_iter"][model_idx].to(device)
     act_block = shared_memory["act_blocks"][act_block_idx]
@@ -256,7 +255,7 @@ def task_train(
 
         if start == 0:
             logging.info(
-                f"Start: Device {device}, Model {model_idx}, Loss: {loss.item()}, Optimizer step: {optimizer.get_step().item()}"
+                f"Start: Device {device}, Model {model_idx}, Loss: {loss.item()}"
             )
 
         act_freq_batch = (feature_acts > 0).float().mean(dim=0)
@@ -310,7 +309,6 @@ def task_train(
     # update shared memory
     shared_memory["act_freq_history"][model_idx].copy_(act_freq_history)
     shared_memory["n_iter"][model_idx].copy_(n_iter)
-    shared_memory["optimizers"][model_idx].copy_state_from(optimizer)
     shared_memory["models"][model_idx].copy_tensors_(model)
 
     del model

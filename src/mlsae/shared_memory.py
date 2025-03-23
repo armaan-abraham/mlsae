@@ -32,7 +32,7 @@ class SharedMemory:
                 for _ in range(n_token_blocks)
             ],
             "models": saes,
-            "optimizers": [optimizer.share_memory_() for optimizer in optimizers],
+            "optimizers": [optimizer for optimizer in optimizers],
             "act_freq_history": [
                 torch.zeros(sae.sparse_dim, dtype=torch.float).share_memory_()
                 for sae in saes
