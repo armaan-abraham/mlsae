@@ -265,6 +265,10 @@ class DeepSAE(nn.Module):
             "mse_loss": mse_loss,
             "feature_acts": feature_acts,
             "reconstructed": reconstructed,
+            "preacts_mean": preacts.mean(),
+            "preacts_std": preacts.std(),
+            "preacts_min": preacts.min(),
+            "preacts_max": preacts.max(),
         }
 
     def forward(self, x, iteration=None):
@@ -287,6 +291,12 @@ class DeepSAE(nn.Module):
         # Store the first result for returning
         first_result = None
         
+        # Calculate initial preacts and their top-k indices
+        with torch.no_grad():
+            initial_preacts = self._get_preacts(x)
+            current_topk = self.get_current_topk(iteration)
+            _, initial_topk_indices = torch.topk(initial_preacts, current_topk, dim=-1)
+        
         # Run multiple optimization steps on the same batch
         for step in range(self.optimize_steps):
             # Get forward results
@@ -306,6 +316,37 @@ class DeepSAE(nn.Module):
             # Update parameters
             optimizer.step()
             optimizer.zero_grad()
+        
+        # Calculate final preacts and their top-k indices
+        with torch.no_grad():
+            final_preacts = self._get_preacts(x)
+            _, final_topk_indices = torch.topk(final_preacts, current_topk, dim=-1)
+            
+            # Calculate churn (percentage of indices that changed)
+            # Create a full-sized mask where matching indices are marked
+            batch_size, sparse_dim = initial_preacts.shape
+            match_mask = torch.zeros(batch_size, sparse_dim, device=x.device)
+            
+            # Set 1s at the positions of initial indices
+            match_mask.scatter_(1, initial_topk_indices, 1.0)
+            
+            # For final indices that also appear in initial indices, they'll remain 1
+            # For final indices that weren't in initial, they'll be set to 1 (making a 2)
+            match_mask.scatter_(1, final_topk_indices, match_mask.gather(1, final_topk_indices) + 1.0)
+            
+            # Count how many indices appear in both sets (have value 2 in the mask)
+            matching_count = (match_mask == 2.0).sum().float()
+            total_count = batch_size * current_topk
+            
+            # Calculate churn as percentage of changed indices
+            topk_churn = 1.0 - (matching_count / total_count)
+            first_result["topk_churn"] = topk_churn.item()
+        
+        first_result["optimizer_step"] = optimizer.get_step()
+        optimizer_exp_avg = optimizer.state[list(optimizer.state.keys())[0]]["exp_avg"]
+        first_result["optimizer_exp_avg_mean"] = optimizer_exp_avg.mean()
+        optimizer_exp_avg_sq = optimizer.state[list(optimizer.state.keys())[0]]["exp_avg_sq"]
+        first_result["optimizer_exp_avg_sq_mean"] = optimizer_exp_avg_sq.mean()
         
         return first_result
 

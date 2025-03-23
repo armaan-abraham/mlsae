@@ -40,8 +40,8 @@ class ExperimentSAETopk(ExperimentSAEBase):
             act_squeeze=0,
             weight_decay=0,
             optimize_steps=1,
-            optimizer_type="mixed_muon",
+            optimizer_type="sparse_adam",
             optimizer_config={
-                "lr": 1e-4,
+                "lr": 2e-4,
             }
         )

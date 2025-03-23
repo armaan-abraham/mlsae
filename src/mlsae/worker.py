@@ -231,6 +231,7 @@ def task_train(
     model = shared_memory["models"][model_idx].clone()
     model.to(device)
     optimizer = init_optimizer(model)
+    optimizer.copy_state_from(shared_memory["optimizers"][model_idx])
     act_freq_history = shared_memory["act_freq_history"][model_idx].to(device)
     n_iter = shared_memory["n_iter"][model_idx].to(device)
     act_block = shared_memory["act_blocks"][act_block_idx]
@@ -243,8 +244,8 @@ def task_train(
 
     # This loop is fine, as we assert that the act block size is correct above,
     # and we set the act block size as a multiple of the SAE batch size
-    for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_tokens):
-        acts = act_block[start : start + data_cfg.sae_batch_size_tokens].to(device)
+    for start in range(0, act_block.shape[0], data_cfg.sae_batch_size_entries):
+        acts = act_block[start : start + data_cfg.sae_batch_size_entries].to(device)
 
         acts = preprocess_acts(acts)
 
@@ -310,6 +311,8 @@ def task_train(
     shared_memory["act_freq_history"][model_idx].copy_(act_freq_history)
     shared_memory["n_iter"][model_idx].copy_(n_iter)
     shared_memory["models"][model_idx].copy_tensors_(model)
+    shared_memory["optimizers"][model_idx].copy_state_from(optimizer)
+
 
     del model
 

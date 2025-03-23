@@ -227,7 +227,7 @@ class RLSAE(ExperimentSAEBase):
             weighted_selector_loss = selector_loss * self.rl_loss_weight
             final_loss = mse_loss + weighted_selector_loss
 
-            return {
+            result = {
                 "loss": final_loss,
                 "mse_loss": mse_loss,
                 "feature_acts": best_feature_acts,
@@ -242,12 +242,19 @@ class RLSAE(ExperimentSAEBase):
             mse_loss = (reconstructed - x).pow(2).mean()
             loss = mse_loss  # plus any optional penalty
 
-            return {
+            result = {
                 "loss": loss,
                 "mse_loss": mse_loss,
                 "feature_acts": feature_acts,
                 "reconstructed": reconstructed,
             }
+
+        result["preacts_mean"] = preacts.mean()
+        result["preacts_std"] = preacts.std()
+        result["preacts_min"] = preacts.min()
+        result["preacts_max"] = preacts.max()
+
+        return result
 
     def optimize(self, x, optimizer, iteration=None):
         with torch.no_grad():
