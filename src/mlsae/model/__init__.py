@@ -19,3 +19,9 @@ for name, obj in list(locals().items()):
         obj is not ExperimentSAEBase
         ):
         models.append(obj)
+
+# Log the discovered experimental models
+import logging
+logging.info(f"Discovered {len(models)} experimental SAE models:")
+for model_class in models:
+    logging.info(f"  - {model_class.__name__}")

@@ -371,20 +371,21 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def process_gradients(self):
-        # self.make_decoder_weights_unit_norm()
+        self.make_decoder_weights_and_grad_unit_norm()
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=0.5)
 
-    def _make_decoder_weights_unit_norm(self, weight):
-        w_normed = weight / weight.norm(dim=0, keepdim=True)
+    def _make_decoder_weights_and_grad_unit_norm(self, weight):
+        w_normed = weight / weight.norm(dim=-1, keepdim=True)
+        if weight.grad is not None:
+            w_dec_grad_proj = (weight.grad * w_normed).sum(-1, keepdim=True) * w_normed
+            weight.grad -= w_dec_grad_proj
         weight.data = w_normed
 
     @torch.no_grad()
-    def make_decoder_weights_unit_norm(self):
+    def make_decoder_weights_and_grad_unit_norm(self):
         for block in self.decoder_blocks:
             if isinstance(block, nn.Linear):
-                self._make_decoder_weights_unit_norm(block.weight)
-            elif isinstance(block, nn.Sequential) and isinstance(block[0], nn.Linear):
-                self._make_decoder_weights_unit_norm(block[0].weight)
+                self._make_decoder_weights_and_grad_unit_norm(block.weight)
 
     def save(self, architecture_name, model_id=None, save_to_s3=False):
         """
