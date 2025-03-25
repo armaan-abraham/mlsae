@@ -14,7 +14,7 @@ class ExperimentSAERL(RLSAE):
             decoder_dim_mults=[],
             device=device,
             num_samples=5,
-            L0_penalty=5e-5,
+            L0_penalty=1e-4,
             rl_loss_weight=0.2,
             optimizer_type="sparse_adam",
             optimizer_config={
@@ -76,12 +76,26 @@ def create_model_variants(base_class, param_grid, prefix="ExperimentSAE"):
     
     return created_classes
 
-# You can also create variants of your ExperimentSAERL class
-# Uncomment if needed:
-# rl_experiment_variants = create_model_variants(
-#     ExperimentSAERL,
-#     {
-#         "num_samples": [3, 5, 10],
-#         "rl_loss_weight": [0.1, 0.2, 0.3]
-#     }
-# )
+rl_experiment_variants = create_model_variants(
+    ExperimentSAERL,
+    {
+        "rl_loss_weight": [0.05, 0.1, 0.2, 0.3],
+        "optimizer_config": [
+            {
+                "lr": 2e-3,
+            },
+            {
+                "lr": 1e-3,
+            },
+            {
+                "lr": 5e-4,
+            },
+            {
+                "lr": 2e-4,
+            },
+            {
+                "lr": 1e-4,
+            },
+        ]
+    }
+)
