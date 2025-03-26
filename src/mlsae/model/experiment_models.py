@@ -5,24 +5,6 @@ import torch.nn as nn
 
 from mlsae.model.rl_sae import RLSAE
 
-class ExperimentSAERL(RLSAE):
-    def __init__(self, act_size: int, device: str = "cpu", rl_loss_weight=0.2, optimizer_config=None):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[],
-            sparse_dim_mult=8,
-            decoder_dim_mults=[],
-            device=device,
-            num_samples=5,
-            L0_penalty=2e-4,
-            rl_loss_weight=rl_loss_weight,
-            optimizer_type="sparse_adam",
-            optimizer_config=optimizer_config,
-            optimize_steps=1,
-
-            base_L0=2,
-            action_collapse_penalty_lambda=0,
-        )
 
 def create_model_variants(base_class, param_grid):
     """
@@ -79,31 +61,72 @@ def create_model_variants(base_class, param_grid):
     
     return created_classes
 
+class ExperimentSAERL(RLSAE):
+    def __init__(self, act_size: int, device: str = "cpu", rl_loss_weight=0.2, optimizer_config=None, action_collapse_penalty_lambda=0, loss_stats_momentum=0.9):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[],
+            sparse_dim_mult=8,
+            decoder_dim_mults=[],
+            device=device,
+            num_samples=5,
+            L0_penalty=2e-4,
+            rl_loss_weight=rl_loss_weight,
+            optimizer_type="sparse_adam",
+            optimizer_config=optimizer_config,
+            optimize_steps=1,
+            loss_stats_momentum=loss_stats_momentum,
+
+            base_L0=13,
+            action_collapse_penalty_lambda=action_collapse_penalty_lambda,
+        )
+
 rl_experiment_variants = create_model_variants(
     ExperimentSAERL,
     {
+        "loss_stats_momentum": [
+            0.9,
+        ],
         "rl_loss_weight": [
-                        0.05, 
-                        0.1, 
-                        0.2, 
-                        0.3
-                            ],
+            0.3
+        ],
         "optimizer_config": [
-            {
-                "lr": 2e-3,
-            },
             {
                 "lr": 1e-3,
             },
-            {
-                "lr": 5e-4,
-            },
-            {
-                "lr": 2e-4,
-            },
-            {
-                "lr": 1e-4,
-            },
-        ]
+        ],
+        "action_collapse_penalty_lambda": [
+            0,
+        ],
     }
 )
+
+# class ExperimentSAETopK(ExperimentSAEBase):
+#     def __init__(self, act_size: int, device: str = "cpu", optimizer_config=None):
+#         super().__init__(
+#             act_size=act_size,
+#             encoder_dim_mults=[],
+#             sparse_dim_mult=8,
+#             decoder_dim_mults=[],
+#             device=device,
+#             topk_init=14,
+#             topk_final=14,
+#             topk_decay_iter=1000,
+#             optimizer_type="sparse_adam",
+#             optimizer_config=optimizer_config,
+#             optimize_steps=1,
+#             weight_decay=0,
+#             act_squeeze=0,
+#         )
+
+
+# experiment_variants = create_model_variants(
+#     ExperimentSAETopK,
+#     {
+#         "optimizer_config": [
+#             {
+#                 "lr": 1e-3,
+#             },
+#         ],
+#     }
+# )

@@ -50,7 +50,7 @@ class DeepSAE(nn.Module):
         topk_final: int = None,
         topk_decay_iter: int = None,
         act_squeeze: float = 0,
-        weight_decay: float = 1e-3,
+        weight_decay: float = 0,
         optimize_steps: int = 1,
     ):
         super().__init__()
@@ -371,7 +371,7 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def process_gradients(self):
-        self.make_decoder_weights_and_grad_unit_norm()
+        # self.make_decoder_weights_and_grad_unit_norm()
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=0.5)
 
     def _make_decoder_weights_and_grad_unit_norm(self, weight):

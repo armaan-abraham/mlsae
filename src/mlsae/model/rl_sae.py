@@ -128,17 +128,19 @@ class RLSAE(ExperimentSAEBase):
         optimizer_config: dict = None,
         optimize_steps: int = 1,
         weight_decay: float = 0,
-
         base_L0: float = 30,
         action_collapse_penalty_lambda: float = 1e-1,
+        loss_stats_momentum: float = 0.9,
     ):
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
-
         self.base_L0 = base_L0
         self.action_collapse_penalty_lambda = action_collapse_penalty_lambda
-
+        self.loss_stats_momentum = loss_stats_momentum
+        
+        # Initialize tracking flag - tensors will be created in _init_params
+        self.loss_stats_initialized = False
 
         super().__init__(
             act_size=act_size,
@@ -165,6 +167,12 @@ class RLSAE(ExperimentSAEBase):
             base_L0=self.base_L0,
             action_collapse_penalty_lambda=self.action_collapse_penalty_lambda,
         )
+        
+        # Initialize running statistics as torch tensors on the correct device
+        self.mse_loss_mean = torch.tensor(0.0, device=self.device)
+        self.mse_loss_sq_mean = torch.tensor(0.0, device=self.device)
+        self.selector_loss_mean = torch.tensor(0.0, device=self.device)
+        self.selector_loss_sq_mean = torch.tensor(0.0, device=self.device)
 
     @torch.no_grad()
     def _evaluate_masks(self, x, sparse_features, masks):
@@ -198,6 +206,37 @@ class RLSAE(ExperimentSAEBase):
         # Stack into shape [num_samples, batch_size]
         return torch.stack(all_rewards, dim=0)
 
+    def _update_loss_stats(self, mse_loss, selector_loss):
+        """Update running statistics for loss normalization"""
+        # Detach to avoid computation graph issues
+        mse_val = mse_loss.detach()
+        selector_val = selector_loss.detach()
+        
+        if not self.loss_stats_initialized:
+            # Initialize with first values
+            self.mse_loss_mean = mse_val.clone()
+            self.mse_loss_sq_mean = mse_val.pow(2)
+            self.selector_loss_mean = selector_val.clone()
+            self.selector_loss_sq_mean = selector_val.pow(2)
+            self.loss_stats_initialized = True
+        else:
+            # Update running statistics with momentum
+            alpha = 1 - self.loss_stats_momentum
+            
+            # Update means
+            self.mse_loss_mean = self.loss_stats_momentum * self.mse_loss_mean + alpha * mse_val
+            self.mse_loss_sq_mean = self.loss_stats_momentum * self.mse_loss_sq_mean + alpha * mse_val.pow(2)
+            
+            self.selector_loss_mean = self.loss_stats_momentum * self.selector_loss_mean + alpha * selector_val
+            self.selector_loss_sq_mean = self.loss_stats_momentum * self.selector_loss_sq_mean + alpha * selector_val.pow(2)
+    
+    def _get_loss_stds(self):
+        """Calculate standard deviations from running statistics"""
+        mse_var = torch.clamp(self.mse_loss_sq_mean - self.mse_loss_mean.pow(2), min=1e-8)
+        selector_var = torch.clamp(self.selector_loss_sq_mean - self.selector_loss_mean.pow(2), min=1e-8)
+        
+        return torch.sqrt(mse_var), torch.sqrt(selector_var)
+
     def _forward(self, x, iteration=None):
         preacts = self._get_preacts(x)
 
@@ -224,8 +263,17 @@ class RLSAE(ExperimentSAEBase):
             
             # RL update: use all masks weighted by their rewards
             selector_loss = self.rl_selector.update_selector(masks, per_sample_rewards)
-            weighted_selector_loss = selector_loss * self.rl_loss_weight
-            final_loss = mse_loss + weighted_selector_loss
+            
+            # Update running statistics and normalize losses
+            self._update_loss_stats(mse_loss, selector_loss)
+            
+            # Calculate normalized losses
+            mse_std, selector_std = self._get_loss_stds()
+            mse_norm = (mse_loss - self.mse_loss_mean) / mse_std
+            selector_norm = (selector_loss - self.selector_loss_mean) / selector_std
+            
+            # Combine normalized losses with weighting
+            final_loss = mse_norm + self.rl_loss_weight * selector_norm
 
             result = {
                 "loss": final_loss,
@@ -233,6 +281,12 @@ class RLSAE(ExperimentSAEBase):
                 "feature_acts": best_feature_acts,
                 "reconstructed": best_reconstructed,
                 "selector_loss": selector_loss,
+                "mse_norm": mse_norm.item(),
+                "selector_norm": selector_norm.item(),
+                "mse_mean": self.mse_loss_mean.item(),
+                "mse_std": mse_std.item(),
+                "selector_mean": self.selector_loss_mean.item(),
+                "selector_std": selector_std.item(),
             }
 
         else:
@@ -306,8 +360,89 @@ class RLSAE(ExperimentSAEBase):
         result["prob_min"] = probs.min().item()
         result["prob_max"] = probs.max().item()
         result["prob_std"] = probs.std().item()
-
         
+        return result
+
+    def copy_tensors_(self, other):
+        """
+        Override to properly copy RL selector parameters and running statistics
+        """
+        # Copy standard parameters from the parent's method
+        super().copy_tensors_(other)
+        
+        # Handle RLFeatureSelector parameters if both have it
+        if hasattr(self, "rl_selector") and hasattr(other, "rl_selector"):
+            # Manually copy parameters from other.rl_selector to self.rl_selector
+            for self_param, other_param in zip(self.rl_selector.parameters(), other.rl_selector.parameters()):
+                self_param.data.copy_(other_param.data)
+        
+        # Copy running statistics
+        self.mse_loss_mean = other.mse_loss_mean.clone()
+        self.mse_loss_sq_mean = other.mse_loss_sq_mean.clone()
+        self.selector_loss_mean = other.selector_loss_mean.clone()
+        self.selector_loss_sq_mean = other.selector_loss_sq_mean.clone()
+        self.loss_stats_initialized = other.loss_stats_initialized
+
+    def share_memory(self):
+        """
+        Share memory for parallel processing, including the running statistics
+        """
+        super().share_memory()
+        
+        # Share memory for statistics tensors
+        self.mse_loss_mean = self.mse_loss_mean.share_memory_()
+        self.mse_loss_sq_mean = self.mse_loss_sq_mean.share_memory_()
+        self.selector_loss_mean = self.selector_loss_mean.share_memory_()
+        self.selector_loss_sq_mean = self.selector_loss_sq_mean.share_memory_()
+        
+        return self
+
+    def clone(self):
+        """
+        Creates a new RLSAE instance with the same configuration and copies parameters.
+        """
+        # Create a new RLSAE with identical hyperparameters
+        new_encoder_dim_mults = [dim / self.act_size for dim in self.encoder_dims]
+        new_decoder_dim_mults = [dim / self.act_size for dim in self.decoder_dims]
+        new_sparse_dim_mult = self.sparse_dim / self.act_size
+        
+        new_sae = RLSAE(
+            act_size=self.act_size,
+            encoder_dim_mults=new_encoder_dim_mults,
+            sparse_dim_mult=new_sparse_dim_mult,
+            decoder_dim_mults=new_decoder_dim_mults,
+            enc_dtype=self.enc_dtype,
+            device=self.device,
+            num_samples=self.num_samples,
+            L0_penalty=self.L0_penalty,
+            rl_loss_weight=self.rl_loss_weight,
+            optimizer_type=self.optimizer_type if hasattr(self, "optimizer_type") else "sparse_adam",
+            optimizer_config=self.optimizer_config if hasattr(self, "optimizer_config") else None,
+            optimize_steps=self.optimize_steps,
+            weight_decay=self.weight_decay,
+            base_L0=self.base_L0,
+            action_collapse_penalty_lambda=self.action_collapse_penalty_lambda,
+            loss_stats_momentum=self.loss_stats_momentum,
+        )
+        
+        # Copy parameter data from the current model (includes running statistics)
+        new_sae.copy_tensors_(self)
+        
+        return new_sae
+
+    def to(self, *args, **kwargs):
+        """
+        Override to move running statistics to the target device/dtype
+        """
+        result = super().to(*args, **kwargs)
+        
+        # Move running statistics to the same device as the model
+        if hasattr(self, "mse_loss_mean"):
+            self.mse_loss_mean = self.mse_loss_mean.to(self.device)
+            self.mse_loss_sq_mean = self.mse_loss_sq_mean.to(self.device)
+            self.selector_loss_mean = self.selector_loss_mean.to(self.device)
+            self.selector_loss_sq_mean = self.selector_loss_sq_mean.to(self.device)
+            
         return result
 
     def get_config_dict(self):
@@ -321,6 +456,7 @@ class RLSAE(ExperimentSAEBase):
             "rl_loss_weight": self.rl_loss_weight,
             "base_L0": self.base_L0,
             "action_collapse_penalty_lambda": self.action_collapse_penalty_lambda,
+            "loss_stats_momentum": self.loss_stats_momentum,
         })
         
         return config
