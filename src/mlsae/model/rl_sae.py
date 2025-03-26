@@ -35,7 +35,9 @@ class RLFeatureSelector(nn.Module):
     def get_probs(self, x):
         """Get activation probabilities from raw encoder outputs"""
         # Add selection bias to inputs for the probability calculation
-        return torch.sigmoid(x + self.base_bias)
+        probs = torch.sigmoid(x + self.base_bias)
+        assert torch.all(probs > 0) and torch.all(probs < 1), "Probabilities must be between 0 and 1"
+        return probs
 
     def sample_mask(self, probs):
         """Sample a binary mask from probabilities"""
@@ -177,34 +179,35 @@ class RLSAE(ExperimentSAEBase):
     @torch.no_grad()
     def _evaluate_masks(self, x, sparse_features, masks):
         """
-        Evaluate per-sample rewards for each mask.
+        Evaluate per-sample rewards for each mask using vectorized operations.
         masks: [num_samples, batch_size, sparse_dim]
         Returns rewards: tensor of shape [num_samples, batch_size] 
-        with the reward (negative loss) per sample for each mask.
         """
-        batch_size = x.shape[0]
-
-        # We'll accumulate rewards for each sample, for each mask
-        all_rewards = []
-
-        for i in range(masks.shape[0]):
-            mask_i = masks[i]  # shape [batch_size, sparse_dim]
-            feature_acts = self.rl_selector.get_feature_mags(sparse_features, mask_i)
-            reconstructed = self._decode(feature_acts)
-
-            # MSE per sample: shape [batch_size]
-            mse_loss_per_sample = (reconstructed - x).pow(2).mean(dim=1)
-
-            # Sparsity penalty per sample: shape [batch_size]
-            # sum of active features per sample, times L0 penalty
-            sparsity_penalty_per_sample = mask_i.sum(dim=1) * self.L0_penalty
-
-            # Combine losses per sample and convert to reward (negative loss)
-            total_reward_per_sample = -(mse_loss_per_sample + sparsity_penalty_per_sample)
-            all_rewards.append(total_reward_per_sample)
-
-        # Stack into shape [num_samples, batch_size]
-        return torch.stack(all_rewards, dim=0)
+        num_samples, batch_size, _ = masks.shape
+        
+        # Compute feature activations for all masks at once [num_samples, batch_size, sparse_dim]
+        feature_acts = self.rl_selector.get_feature_mags(
+            sparse_features.unsqueeze(0).expand(num_samples, -1, -1),  # Expand to match mask dims
+            masks
+        )
+        
+        # Reshape for batch processing [num_samples*batch_size, sparse_dim]
+        feature_acts_flat = feature_acts.view(-1, self.sparse_dim)
+        
+        # Decode all samples at once [num_samples*batch_size, act_size]
+        reconstructed_flat = self._decode(feature_acts_flat)
+        
+        # Reshape back to [num_samples, batch_size, act_size]
+        reconstructed = reconstructed_flat.view(num_samples, batch_size, -1)
+        
+        # Vectorized MSE calculation [num_samples, batch_size]
+        mse_loss_per_sample = (reconstructed - x.unsqueeze(0)).pow(2).mean(dim=2)
+        
+        # Vectorized sparsity penalty [num_samples, batch_size]
+        sparsity_penalty_per_sample = masks.sum(dim=2) * self.L0_penalty
+        
+        # Combine losses and convert to reward [num_samples, batch_size]
+        return -(mse_loss_per_sample + sparsity_penalty_per_sample)
 
     def _update_loss_stats(self, mse_loss, selector_loss):
         """Update running statistics for loss normalization"""
@@ -230,6 +233,7 @@ class RLSAE(ExperimentSAEBase):
             self.selector_loss_mean = self.loss_stats_momentum * self.selector_loss_mean + alpha * selector_val
             self.selector_loss_sq_mean = self.loss_stats_momentum * self.selector_loss_sq_mean + alpha * selector_val.pow(2)
     
+    @torch.no_grad()
     def _get_loss_stds(self):
         """Calculate standard deviations from running statistics"""
         mse_var = self.mse_loss_sq_mean - self.mse_loss_mean.pow(2)
@@ -238,6 +242,8 @@ class RLSAE(ExperimentSAEBase):
         return torch.clamp(torch.sqrt(mse_var), min=1e-8), torch.clamp(torch.sqrt(selector_var), min=1e-8)
 
     def _forward(self, x, iteration=None):
+        assert 'cuda' in str(self.device) and 'cuda' in str(next(self.rl_selector.parameters()).device), "Both SAE and RL selector must be on GPU"
+
         preacts = self._get_preacts(x)
 
         if self.training:
