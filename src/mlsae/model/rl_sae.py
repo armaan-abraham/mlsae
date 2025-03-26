@@ -232,10 +232,10 @@ class RLSAE(ExperimentSAEBase):
     
     def _get_loss_stds(self):
         """Calculate standard deviations from running statistics"""
-        mse_var = torch.clamp(self.mse_loss_sq_mean - self.mse_loss_mean.pow(2), min=1e-8)
-        selector_var = torch.clamp(self.selector_loss_sq_mean - self.selector_loss_mean.pow(2), min=1e-8)
+        mse_var = self.mse_loss_sq_mean - self.mse_loss_mean.pow(2)
+        selector_var = self.selector_loss_sq_mean - self.selector_loss_mean.pow(2)
         
-        return torch.sqrt(mse_var), torch.sqrt(selector_var)
+        return torch.clamp(torch.sqrt(mse_var), min=1e-8), torch.clamp(torch.sqrt(selector_var), min=1e-8)
 
     def _forward(self, x, iteration=None):
         preacts = self._get_preacts(x)
