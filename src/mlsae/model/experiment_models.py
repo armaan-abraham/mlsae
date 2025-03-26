@@ -62,14 +62,14 @@ def create_model_variants(base_class, param_grid):
     return created_classes
 
 class ExperimentSAERL(RLSAE):
-    def __init__(self, act_size: int, device: str = "cpu", rl_loss_weight=0.2, optimizer_config=None, action_collapse_penalty_lambda=0, loss_stats_momentum=0.9, base_L0=32):
+    def __init__(self, act_size: int, device: str = "cpu", rl_loss_weight=0.2, optimizer_config=None, action_collapse_penalty_lambda=0, loss_stats_momentum=0.9, base_L0=32, num_samples=10):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[],
             sparse_dim_mult=8,
             decoder_dim_mults=[],
             device=device,
-            num_samples=5,
+            num_samples=num_samples,
             L0_penalty=5e-3,
             rl_loss_weight=rl_loss_weight,
             optimizer_type="sparse_adam",
@@ -83,20 +83,18 @@ class ExperimentSAERL(RLSAE):
 rl_experiment_variants = create_model_variants(
     ExperimentSAERL,
     {
-        "loss_stats_momentum": [
-            0.9,
-        ],
         "rl_loss_weight": [
-            2,
+            1,
+            3,
         ],
         "optimizer_config": [
             {
-                "lr": 2e-3,
+                "lr": 1e-3,
             },
         ],
-        "base_L0": [
-            4,
-        ]
+        "num_samples": [
+            5,
+        ],
     }
 )
 

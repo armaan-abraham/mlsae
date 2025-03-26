@@ -35,8 +35,8 @@ class RLFeatureSelector(nn.Module):
     def get_probs(self, x):
         """Get activation probabilities from raw encoder outputs"""
         # Add selection bias to inputs for the probability calculation
-        probs = torch.sigmoid(x + self.base_bias)
-        assert torch.all(probs > 0) and torch.all(probs < 1), "Probabilities must be between 0 and 1"
+        probs = torch.sigmoid((x + self.base_bias).clamp(min=-5, max=5))
+        assert torch.all(probs >= 0) and torch.all(probs <= 1), "Probabilities must be between 0 and 1"
         return probs
 
     def sample_mask(self, probs):
