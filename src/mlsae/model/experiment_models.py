@@ -84,17 +84,26 @@ rl_experiment_variants = create_model_variants(
     ExperimentSAERL,
     {
         "rl_loss_weight": [
-            1,
-            3,
+            0.2,
+            0.4,
+            0.8,
         ],
         "optimizer_config": [
             {
+                "lr": 5e-4,
+            },
+            {
                 "lr": 1e-3,
             },
+            {
+                "lr": 2e-3,
+            },
         ],
-        "num_samples": [
-            5,
-        ],
+        "base_L0": [
+            4,
+            16,
+            32,
+        ]
     }
 )
 
