@@ -92,6 +92,8 @@ gitdb==4.0.12
     # via gitpython
 gitpython==3.1.44
     # via wandb
+gprof2dot==2024.6.6
+    # via mlsae
 huggingface-hub==0.27.1
     # via accelerate
     # via datasets
@@ -122,6 +124,8 @@ jupyter-core==5.7.2
     # via jupyter-client
 kiwisolver==1.4.8
     # via matplotlib
+line-profiler==4.2.0
+    # via mlsae
 markdown-it-py==3.0.0
     # via rich
 markupsafe==3.0.2

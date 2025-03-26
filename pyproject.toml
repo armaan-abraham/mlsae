@@ -20,6 +20,8 @@ dependencies = [
     "petname>=2.6",
     "awscli>=1.37.2",
     "pytest>=8.3.4",
+    "line-profiler>=4.2.0",
+    "gprof2dot>=2024.6.6",
 ]
 readme = "README.md"
 requires-python = ">= 3.8"
