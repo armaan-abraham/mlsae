@@ -36,6 +36,17 @@ class RLFeatureSelector(nn.Module):
         """Get activation probabilities from raw encoder outputs"""
         # Add selection bias to inputs for the probability calculation
         probs = torch.sigmoid((x + self.base_bias).clamp(min=-5, max=5))
+        if torch.any(probs > 1) or torch.any(probs < 0):
+            # Print out the problematic values
+            invalid_probs = torch.logical_or(probs > 1, probs < 0)
+            if torch.any(invalid_probs):
+                print(f"WARNING: Invalid probabilities detected!")
+                print(f"Number of invalid values: {invalid_probs.sum().item()}")
+                invalid_indices = torch.nonzero(invalid_probs, as_tuple=True)
+                invalid_values = probs[invalid_indices]
+                print(f"Invalid probability values: {invalid_values.tolist()}")
+                print(f"Corresponding input x values: {x[invalid_indices].tolist()}")
+                probs = torch.clamp(probs, 0, 1)
         assert torch.all(probs >= 0) and torch.all(probs <= 1), "Probabilities must be between 0 and 1"
         return probs
 
@@ -279,7 +290,7 @@ class RLSAE(ExperimentSAEBase):
             selector_norm = (selector_loss - self.selector_loss_mean) / selector_std
             
             # Combine normalized losses with weighting
-            final_loss = mse_norm + self.rl_loss_weight * selector_norm
+            final_loss = mse_loss + self.rl_loss_weight * selector_loss
 
             result = {
                 "loss": final_loss,
