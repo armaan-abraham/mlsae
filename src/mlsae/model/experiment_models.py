@@ -97,12 +97,10 @@ rl_experiment_variants = create_model_variants(
         "optimizer_config": [
             {
                 "lr": 2e-3,
-                "lr": 1e-3,
-                "lr": 5e-4,
             },
-        ],
-        "action_collapse_penalty_lambda": [
-            0,
+            {
+                "lr": 1e-3,
+            },
         ],
     }
 )
