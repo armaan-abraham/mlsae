@@ -46,9 +46,6 @@ class DeepSAE(nn.Module):
         enc_dtype: str = "fp32",
         device: str = "cpu",
         topk: int = 16,
-        topk_init: int = None,
-        topk_final: int = None,
-        topk_decay_iter: int = None,
         act_squeeze: float = 0,
         weight_decay: float = 0,
         optimize_steps: int = 1,
@@ -65,14 +62,10 @@ class DeepSAE(nn.Module):
         self.device = str(device)
         self.weight_decay = weight_decay
         self.optimize_steps = optimize_steps
-        # Setup topk decay schedule
-        self.topk_init = topk_init if topk_init is not None else topk
-        self.topk_final = topk_final if topk_final is not None else topk
-        self.topk_decay_iter = topk_decay_iter if topk_decay_iter is not None else 0
-        self.topk = self.topk_init  # For backwards compatibility
         
-        assert self.topk_init < self.sparse_dim, f"TopK initial value must be less than sparse dim"
-        assert self.topk_final < self.sparse_dim, f"TopK final value must be less than sparse dim"
+        # Simplified topk setup
+        self.topk = topk
+        assert self.topk < self.sparse_dim, f"TopK value must be less than sparse dim"
         
         self.act_squeeze = act_squeeze
 
@@ -196,18 +189,6 @@ class DeepSAE(nn.Module):
         nn.init.zeros_(layer.bias)
         return layer
 
-    def get_current_topk(self, iteration=None):
-        """
-        Calculate the current topk value based on the linear decay schedule.
-        """
-        if iteration is None or self.topk_decay_iter <= 0 or iteration >= self.topk_decay_iter:
-            return self.topk_final
-            
-        # Linear decay from topk_init to topk_final
-        decay_fraction = iteration / self.topk_decay_iter
-        current_topk = self.topk_init - decay_fraction * (self.topk_init - self.topk_final)
-        return max(1, int(current_topk))  # Ensure it's at least 1
-
     def _get_preacts(self, resid):
         if self.encoder_dims:
 
@@ -294,7 +275,7 @@ class DeepSAE(nn.Module):
         # Calculate initial preacts and their top-k indices
         with torch.no_grad():
             initial_preacts = self._get_preacts(x)
-            current_topk = self.get_current_topk(iteration)
+            current_topk = self.topk
             _, initial_topk_indices = torch.topk(initial_preacts, current_topk, dim=-1)
         
         # Run multiple optimization steps on the same batch
@@ -408,9 +389,6 @@ class DeepSAE(nn.Module):
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
             "topk": self.topk,
-            "topk_init": self.topk_init,
-            "topk_final": self.topk_final,
-            "topk_decay_iter": self.topk_decay_iter,
             "act_squeeze": self.act_squeeze,
             "name": self.name,
         }
@@ -471,9 +449,6 @@ class DeepSAE(nn.Module):
                 enc_dtype=self.enc_dtype,
                 device=self.device,
                 topk=self.topk,
-                topk_init=self.topk_init,
-                topk_final=self.topk_final,
-                topk_decay_iter=self.topk_decay_iter,
                 act_squeeze=self.act_squeeze,
             )
 
