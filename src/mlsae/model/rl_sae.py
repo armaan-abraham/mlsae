@@ -16,13 +16,13 @@ class RLFeatureSelector(nn.Module):
     based on probabilities from a sigmoid activation.
     """
 
-    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, base_L0=30, action_collapse_penalty_lambda=1e-1):
+    def __init__(self, sparse_dim, L0_penalty=1e-2, num_samples=10, base_L0=30, temperature=1.0):
         super().__init__()
         self.sparse_dim = sparse_dim
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
         self.base_L0 = base_L0
-        self.action_collapse_penalty_lambda = action_collapse_penalty_lambda
+        self.temperature = temperature
 
         # Compute the base bias from the base L0
         self.base_prob = base_L0 / sparse_dim
@@ -35,7 +35,7 @@ class RLFeatureSelector(nn.Module):
     def get_probs(self, x):
         """Get activation probabilities from raw encoder outputs"""
         # Add selection bias to inputs for the probability calculation
-        probs = torch.sigmoid((x + self.base_bias).clamp(min=-5, max=5))
+        probs = torch.sigmoid(((x / self.temperature + self.base_bias)).clamp(min=-5, max=5))
         if torch.any(probs > 1) or torch.any(probs < 0):
             # Print out the problematic values
             invalid_probs = torch.logical_or(probs > 1, probs < 0)
@@ -114,13 +114,6 @@ class RLFeatureSelector(nn.Module):
         log_mask_probs = torch.log(expanded_probs + eps) * masks + torch.log(1 - expanded_probs + eps) * (1 - masks)
 
         selector_loss = -torch.mean(log_mask_probs * advantages[:, :, None])
-
-        # Compute penalty for logit deviation from base prob
-        logit_deviation = (self.saved_prebias_logits).abs().mean()
-        action_collapse_penalty = self.action_collapse_penalty_lambda * logit_deviation
-        
-        # Add to selector loss
-        selector_loss = selector_loss + action_collapse_penalty
         
         return selector_loss
 
@@ -142,14 +135,19 @@ class RLSAE(ExperimentSAEBase):
         optimize_steps: int = 1,
         weight_decay: float = 0,
         base_L0: float = 30,
-        action_collapse_penalty_lambda: float = 1e-1,
+        initial_temperature: float = 1.0,
+        min_temperature: float = 0.1,
+        temperature_tau: float = 0.999,
         loss_stats_momentum: float = 0.9,
     ):
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
         self.rl_loss_weight = rl_loss_weight
         self.base_L0 = base_L0
-        self.action_collapse_penalty_lambda = action_collapse_penalty_lambda
+        self.initial_temperature = initial_temperature
+        self.current_temperature = initial_temperature
+        self.min_temperature = min_temperature
+        self.temperature_tau = temperature_tau
         self.loss_stats_momentum = loss_stats_momentum
         
         # Initialize tracking flag - tensors will be created in _init_params
@@ -178,7 +176,7 @@ class RLSAE(ExperimentSAEBase):
             L0_penalty=self.L0_penalty,
             num_samples=self.num_samples,
             base_L0=self.base_L0,
-            action_collapse_penalty_lambda=self.action_collapse_penalty_lambda,
+            temperature=self.current_temperature,
         )
         
         # Initialize running statistics as torch tensors on the correct device
@@ -255,6 +253,11 @@ class RLSAE(ExperimentSAEBase):
     def _forward(self, x, iteration=None):
         assert 'cuda' in str(self.device) and 'cuda' in str(next(self.rl_selector.parameters()).device), "Both SAE and RL selector must be on GPU"
 
+        # Update temperature based on iteration if provided
+        if iteration is not None and self.training:
+            self.current_temperature = self.min_temperature + (self.initial_temperature - self.min_temperature) * (0.5 ** (iteration / self.temperature_tau))
+            self.rl_selector.temperature = self.current_temperature
+
         preacts = self._get_preacts(x)
 
         if self.training:
@@ -304,6 +307,7 @@ class RLSAE(ExperimentSAEBase):
                 "mse_std": mse_std.item(),
                 "selector_mean": self.selector_loss_mean.item(),
                 "selector_std": selector_std.item(),
+                "temperature": self.current_temperature,
             }
 
         else:
@@ -324,6 +328,12 @@ class RLSAE(ExperimentSAEBase):
         result["preacts_std"] = preacts.std()
         result["preacts_min"] = preacts.min()
         result["preacts_max"] = preacts.max()
+
+        # Add magnitude parameter statistics
+        result["magnitude_scalar_min"] = self.rl_selector.magnitude_scalar.min().item()
+        result["magnitude_scalar_max"] = self.rl_selector.magnitude_scalar.max().item()
+        result["magnitude_bias_min"] = self.rl_selector.magnitude_bias.min().item()
+        result["magnitude_bias_max"] = self.rl_selector.magnitude_bias.max().item()
 
         return result
 
@@ -438,7 +448,9 @@ class RLSAE(ExperimentSAEBase):
             optimize_steps=self.optimize_steps,
             weight_decay=self.weight_decay,
             base_L0=self.base_L0,
-            action_collapse_penalty_lambda=self.action_collapse_penalty_lambda,
+            initial_temperature=self.initial_temperature,
+            min_temperature=self.min_temperature,
+            temperature_tau=self.temperature_tau,
             loss_stats_momentum=self.loss_stats_momentum,
         )
         
@@ -472,7 +484,9 @@ class RLSAE(ExperimentSAEBase):
             "L0_penalty": self.L0_penalty,
             "rl_loss_weight": self.rl_loss_weight,
             "base_L0": self.base_L0,
-            "action_collapse_penalty_lambda": self.action_collapse_penalty_lambda,
+            "initial_temperature": self.initial_temperature,
+            "min_temperature": self.min_temperature,
+            "temperature_tau": self.temperature_tau,
             "loss_stats_momentum": self.loss_stats_momentum,
         })
         
