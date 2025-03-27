@@ -61,78 +61,27 @@ def create_model_variants(base_class, param_grid):
     
     return created_classes
 
-class ExperimentSAERL(RLSAE):
-    def __init__(self, act_size: int, device: str = "cpu", rl_loss_weight=0.2, optimizer_config=None, action_collapse_penalty_lambda=0, loss_stats_momentum=0.9, base_L0=32, num_samples=10):
+
+class ExperimentSAEReLU(ExperimentSAEBase):
+    def __init__(self, act_size: int, device: str = "cpu", l1_coeff=0.01, n_layers=0):
         super().__init__(
             act_size=act_size,
-            encoder_dim_mults=[],
+            encoder_dim_mults=[1 for _ in range(n_layers)],
             sparse_dim_mult=8,
-            decoder_dim_mults=[],
+            decoder_dim_mults=[1 for _ in range(n_layers)],
             device=device,
-            num_samples=num_samples,
-            L0_penalty=5e-3,
-            rl_loss_weight=rl_loss_weight,
+            l1_coeff=l1_coeff,
             optimizer_type="sparse_adam",
-            optimizer_config=optimizer_config,
-            optimize_steps=2,
-            loss_stats_momentum=loss_stats_momentum,
-            base_L0=base_L0,
-            action_collapse_penalty_lambda=action_collapse_penalty_lambda,
+            optimizer_config={"lr": 1e-4},
+            optimize_steps=1,
+            weight_decay=0,
         )
 
-rl_experiment_variants = create_model_variants(
-    ExperimentSAERL,
+
+experiment_variants = create_model_variants(
+    ExperimentSAEReLU,
     {
-        "rl_loss_weight": [
-            0.2,
-            0.4,
-            0.8,
-        ],
-        "optimizer_config": [
-            {
-                "lr": 5e-4,
-            },
-            {
-                "lr": 1e-3,
-            },
-            {
-                "lr": 2e-3,
-            },
-        ],
-        "base_L0": [
-            4,
-            16,
-            32,
-        ]
+        "l1_coeff": [3e-7, 3.5e-7, 4e-7, 4.5e-7, 5e-7],
+        "n_layers": [0, 1, 2],
     }
 )
-
-# class ExperimentSAETopK(ExperimentSAEBase):
-#     def __init__(self, act_size: int, device: str = "cpu", optimizer_config=None):
-#         super().__init__(
-#             act_size=act_size,
-#             encoder_dim_mults=[],
-#             sparse_dim_mult=8,
-#             decoder_dim_mults=[],
-#             device=device,
-#             topk_init=14,
-#             topk_final=14,
-#             topk_decay_iter=1000,
-#             optimizer_type="sparse_adam",
-#             optimizer_config=optimizer_config,
-#             optimize_steps=1,
-#             weight_decay=0,
-#             act_squeeze=0,
-#         )
-
-
-# experiment_variants = create_model_variants(
-#     ExperimentSAETopK,
-#     {
-#         "optimizer_config": [
-#             {
-#                 "lr": 1e-3,
-#             },
-#         ],
-#     }
-# )

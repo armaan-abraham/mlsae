@@ -45,10 +45,9 @@ class DeepSAE(nn.Module):
         name: str = None,
         enc_dtype: str = "fp32",
         device: str = "cpu",
-        topk: int = 16,
-        act_squeeze: float = 0,
         weight_decay: float = 0,
         optimize_steps: int = 1,
+        l1_coeff: float = 0.01,
     ):
         super().__init__()
 
@@ -62,12 +61,7 @@ class DeepSAE(nn.Module):
         self.device = str(device)
         self.weight_decay = weight_decay
         self.optimize_steps = optimize_steps
-        
-        # Simplified topk setup
-        self.topk = topk
-        assert self.topk < self.sparse_dim, f"TopK value must be less than sparse dim"
-        
-        self.act_squeeze = act_squeeze
+        self.l1_coeff = l1_coeff
 
         self.track_acts_stats = False
         # Tracking stats
@@ -229,21 +223,21 @@ class DeepSAE(nn.Module):
     def _forward(self, x, iteration=None):
         preacts = self._get_preacts(x)
 
-        feature_acts = TopKActivation(self.topk)(preacts)
-        assert (
-            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
-        ).all()
-
+        feature_acts = F.relu(preacts)
+        
         reconstructed = self._decode(feature_acts)
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
         
-        loss = mse_loss
+        # Add L1 penalty
+        l1_loss = feature_acts.abs().sum() * self.l1_coeff
+        loss = mse_loss + l1_loss
 
         return {
             "loss": loss,
             "mse_loss": mse_loss,
+            "l1_loss": l1_loss,
             "feature_acts": feature_acts,
             "reconstructed": reconstructed,
             "preacts_mean": preacts.mean(),
@@ -272,11 +266,10 @@ class DeepSAE(nn.Module):
         # Store the first result for returning
         first_result = None
         
-        # Calculate initial preacts and their top-k indices
+        # Calculate initial preacts and their active features
         with torch.no_grad():
             initial_preacts = self._get_preacts(x)
-            current_topk = self.topk
-            _, initial_topk_indices = torch.topk(initial_preacts, current_topk, dim=-1)
+            initial_active = initial_preacts > 0  # Track where preacts were positive
         
         # Run multiple optimization steps on the same batch
         for step in range(self.optimize_steps):
@@ -298,30 +291,14 @@ class DeepSAE(nn.Module):
             optimizer.step()
             optimizer.zero_grad()
         
-        # Calculate final preacts and their top-k indices
+        # Calculate final active features after optimization
         with torch.no_grad():
             final_preacts = self._get_preacts(x)
-            _, final_topk_indices = torch.topk(final_preacts, current_topk, dim=-1)
-            
-            # Calculate churn (percentage of indices that changed)
-            # Create a full-sized mask where matching indices are marked
-            batch_size, sparse_dim = initial_preacts.shape
-            match_mask = torch.zeros(batch_size, sparse_dim, device=x.device)
-            
-            # Set 1s at the positions of initial indices
-            match_mask.scatter_(1, initial_topk_indices, 1.0)
-            
-            # For final indices that also appear in initial indices, they'll remain 1
-            # For final indices that weren't in initial, they'll be set to 1 (making a 2)
-            match_mask.scatter_(1, final_topk_indices, match_mask.gather(1, final_topk_indices) + 1.0)
-            
-            # Count how many indices appear in both sets (have value 2 in the mask)
-            matching_count = (match_mask == 2.0).sum().float()
-            total_count = batch_size * current_topk
-            
-            # Calculate churn as percentage of changed indices
-            topk_churn = 1.0 - (matching_count / total_count)
-            first_result["topk_churn"] = topk_churn.item()
+            final_active = final_preacts > 0
+        
+        # Compute feature churn (changed activations)
+        feature_churn = (initial_active != final_active).sum().item()
+        first_result["feature_churn"] = feature_churn
         
         first_result["optimizer_step"] = optimizer.get_step()
         optimizer_exp_avg = optimizer.state[list(optimizer.state.keys())[0]]["exp_avg"]
@@ -352,7 +329,7 @@ class DeepSAE(nn.Module):
 
     @torch.no_grad()
     def process_gradients(self):
-        # self.make_decoder_weights_and_grad_unit_norm()
+        self.make_decoder_weights_and_grad_unit_norm()
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=0.5)
 
     def _make_decoder_weights_and_grad_unit_norm(self, weight):
@@ -388,9 +365,8 @@ class DeepSAE(nn.Module):
             "sparse_dim": self.sparse_dim,
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
-            "topk": self.topk,
-            "act_squeeze": self.act_squeeze,
             "name": self.name,
+            "l1_coeff": self.l1_coeff,
         }
         
         # Add optimizer configuration if defined in an ExperimentSAEBase subclass
@@ -448,8 +424,7 @@ class DeepSAE(nn.Module):
                 name=self.name,
                 enc_dtype=self.enc_dtype,
                 device=self.device,
-                topk=self.topk,
-                act_squeeze=self.act_squeeze,
+                l1_coeff=self.l1_coeff,
             )
 
         else:
