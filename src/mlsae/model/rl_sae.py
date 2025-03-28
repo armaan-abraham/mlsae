@@ -139,6 +139,7 @@ class RLSAE(ExperimentSAEBase):
         min_temperature: float = 0.1,
         temperature_tau: float = 0.999,
         loss_stats_momentum: float = 0.9,
+        eval_batch_size: int = 10,
     ):
         self.L0_penalty = L0_penalty
         self.num_samples = num_samples
@@ -149,6 +150,7 @@ class RLSAE(ExperimentSAEBase):
         self.min_temperature = min_temperature
         self.temperature_tau = temperature_tau
         self.loss_stats_momentum = loss_stats_momentum
+        self.eval_batch_size = eval_batch_size
         
         # Initialize tracking flag - tensors will be created in _init_params
         self.loss_stats_initialized = False
@@ -188,35 +190,37 @@ class RLSAE(ExperimentSAEBase):
     @torch.no_grad()
     def _evaluate_masks(self, x, sparse_features, masks):
         """
-        Evaluate per-sample rewards for each mask using vectorized operations.
+        Evaluate per-sample rewards for each mask using batched processing.
         masks: [num_samples, batch_size, sparse_dim]
         Returns rewards: tensor of shape [num_samples, batch_size] 
         """
         num_samples, batch_size, _ = masks.shape
+        all_rewards = []
         
-        # Compute feature activations for all masks at once [num_samples, batch_size, sparse_dim]
-        feature_acts = self.rl_selector.get_feature_mags(
-            sparse_features.unsqueeze(0).expand(num_samples, -1, -1),  # Expand to match mask dims
-            masks
-        )
-        
-        # Reshape for batch processing [num_samples*batch_size, sparse_dim]
-        feature_acts_flat = feature_acts.view(-1, self.sparse_dim)
-        
-        # Decode all samples at once [num_samples*batch_size, act_size]
-        reconstructed_flat = self._decode(feature_acts_flat)
-        
-        # Reshape back to [num_samples, batch_size, act_size]
-        reconstructed = reconstructed_flat.view(num_samples, batch_size, -1)
-        
-        # Vectorized MSE calculation [num_samples, batch_size]
-        mse_loss_per_sample = (reconstructed - x.unsqueeze(0)).pow(2).mean(dim=2)
-        
-        # Vectorized sparsity penalty [num_samples, batch_size]
-        sparsity_penalty_per_sample = masks.sum(dim=2) * self.L0_penalty
-        
-        # Combine losses and convert to reward [num_samples, batch_size]
-        return -(mse_loss_per_sample + sparsity_penalty_per_sample)
+        # Process masks in batches to reduce memory usage
+        eval_batch_size = self.eval_batch_size
+        for start_idx in range(0, num_samples, eval_batch_size):
+            end_idx = min(start_idx + eval_batch_size, num_samples)
+            batch_masks = masks[start_idx:end_idx]
+            
+            # Process current batch of masks
+            batch_feature_acts = self.rl_selector.get_feature_mags(
+                sparse_features.unsqueeze(0).expand(len(batch_masks), -1, -1),
+                batch_masks
+            )
+            
+            # Decode all samples in current batch
+            reconstructed_flat = self._decode(batch_feature_acts.view(-1, self.sparse_dim))
+            reconstructed = reconstructed_flat.view(len(batch_masks), batch_size, -1)
+            
+            # Calculate rewards for this batch
+            batch_mse = (reconstructed - x.unsqueeze(0)).pow(2).mean(dim=2)
+            batch_sparsity = batch_masks.sum(dim=2) * self.L0_penalty
+            batch_rewards = -(batch_mse + batch_sparsity)
+            
+            all_rewards.append(batch_rewards)
+
+        return torch.cat(all_rewards, dim=0)
 
     def _update_loss_stats(self, mse_loss, selector_loss):
         """Update running statistics for loss normalization"""
@@ -452,6 +456,7 @@ class RLSAE(ExperimentSAEBase):
             min_temperature=self.min_temperature,
             temperature_tau=self.temperature_tau,
             loss_stats_momentum=self.loss_stats_momentum,
+            eval_batch_size=self.eval_batch_size,
         )
         
         # Copy parameter data from the current model (includes running statistics)
@@ -488,6 +493,7 @@ class RLSAE(ExperimentSAEBase):
             "min_temperature": self.min_temperature,
             "temperature_tau": self.temperature_tau,
             "loss_stats_momentum": self.loss_stats_momentum,
+            "eval_batch_size": self.eval_batch_size,
         })
         
         return config
