@@ -9,7 +9,7 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     sae_batch_size_entries: int = 131072
-    act_block_size_sae_batch_size_mult: int = 128
+    act_block_size_sae_batch_size_mult: int = 8
 
     seq_len: int = 16
     llm_batch_size_seqs: int = 500
@@ -20,7 +20,7 @@ class DataConfig:
     site: str = "resid_pre"
     layer: int = 1
     act_size_full: int = 128
-    act_size_full_multiple: int = 16
+    act_size_full_multiple: int = 1
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 20
@@ -56,7 +56,7 @@ data_cfg = DataConfig()
 
 @dataclass
 class TrainConfig:
-    num_entries: int = int(1e9)
+    num_entries: int = int(4e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = False
