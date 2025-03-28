@@ -32,10 +32,10 @@ class RLFeatureSelector(nn.Module):
         self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
         self.magnitude_scalar = nn.Parameter(torch.ones(sparse_dim))
 
-    def get_probs(self, x):
+    def get_probs(self, x, temperature=1.0):
         """Get activation probabilities from raw encoder outputs"""
         # Add selection bias to inputs for the probability calculation
-        probs = torch.sigmoid(((x / self.temperature + self.base_bias)).clamp(min=-5, max=5))
+        probs = torch.sigmoid(((x / temperature + self.base_bias)).clamp(min=-5, max=5))
         if torch.any(probs > 1) or torch.any(probs < 0):
             # Print out the problematic values
             invalid_probs = torch.logical_or(probs > 1, probs < 0)
@@ -69,7 +69,7 @@ class RLFeatureSelector(nn.Module):
         # Store for learning
         self.saved_prebias_logits = x
 
-        probs = self.get_probs(x)
+        probs = self.get_probs(x, temperature=self.temperature)
 
         # Sample multiple masks: shape [num_samples, batch_size, sparse_dim]
         masks = torch.stack([self.sample_mask(probs) for _ in range(num_samples)])
@@ -344,7 +344,7 @@ class RLSAE(ExperimentSAEBase):
     def optimize(self, x, optimizer, iteration=None):
         with torch.no_grad():
             preacts = self._get_preacts(x)
-            probs = self.rl_selector.get_probs(preacts)
+            probs = self.rl_selector.get_probs(preacts, temperature=self.current_temperature)
             
             sorted_probs = torch.sort(probs.flatten())[0]
             n = sorted_probs.size(0)

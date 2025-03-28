@@ -56,7 +56,7 @@ data_cfg = DataConfig()
 
 @dataclass
 class TrainConfig:
-    num_entries: int = int(4e9)
+    num_entries: int = int(8e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
     save_to_s3: bool = False
