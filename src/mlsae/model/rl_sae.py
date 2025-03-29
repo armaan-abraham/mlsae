@@ -52,7 +52,8 @@ class RLFeatureSelector(nn.Module):
 
     def sample_mask(self, probs):
         """Sample a binary mask from probabilities"""
-        return torch.bernoulli(probs)
+        mask = torch.bernoulli(probs)
+        return mask
 
     def forward(self, x):
         """During inference, just use deterministic threshold"""
@@ -76,7 +77,7 @@ class RLFeatureSelector(nn.Module):
         return masks
 
     def get_feature_mags(self, x, mask):
-        magnitudes = F.relu(x * self.magnitude_scalar + self.magnitude_bias) * mask
+        magnitudes = (x * self.magnitude_scalar + self.magnitude_bias) * mask
         return magnitudes
 
     def update_selector(self, masks, rewards):
@@ -256,7 +257,7 @@ class RLSAE(ExperimentSAEBase):
 
     def _forward(self, x, iteration=None):
         assert 'cuda' in str(self.device) and 'cuda' in str(next(self.rl_selector.parameters()).device), "Both SAE and RL selector must be on GPU"
-
+        
         # Update temperature based on iteration if provided
         if iteration is not None and self.training:
             self.current_temperature = self.min_temperature + (self.initial_temperature - self.min_temperature) * (0.5 ** (iteration / self.temperature_tau))
