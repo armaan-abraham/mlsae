@@ -259,7 +259,7 @@ def task_train(
                 f"Start: Device {device}, Model {model_idx}, Loss: {loss.item()}"
             )
 
-        act_freq_batch = (feature_acts > 0).float().mean(dim=0)
+        act_freq_batch = (feature_acts != 0).float().mean(dim=0)
         act_freq_history += act_freq_batch
         
         # Calculate the average number of nonzero features per example in the batch
