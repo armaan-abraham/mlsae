@@ -78,7 +78,7 @@ class ExperimentSAERL(RLSAE):
             optimize_steps=1,
             loss_stats_momentum=loss_stats_momentum,
             base_L0=base_L0,
-            initial_temperature=1e6,
+            initial_temperature=50,
             min_temperature=1.0,
             temperature_tau=2000,
         )
