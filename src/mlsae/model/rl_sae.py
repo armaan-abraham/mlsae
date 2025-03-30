@@ -32,10 +32,14 @@ class RLFeatureSelector(nn.Module):
         self.magnitude_bias = nn.Parameter(torch.zeros(sparse_dim))
         self.magnitude_scalar = nn.Parameter(torch.ones(sparse_dim))
 
+        self.prob_bias = nn.Parameter(torch.zeros(sparse_dim))
+        self.prob_scalar = nn.Parameter(torch.ones(sparse_dim))
+
     def get_probs(self, x, temperature=1.0):
         """Get activation probabilities from raw encoder outputs"""
+        prob_acts = x * self.prob_scalar + self.prob_bias
         # Add selection bias to inputs for the probability calculation
-        probs = torch.sigmoid(((x / temperature + self.base_bias)).clamp(min=-5, max=5))
+        probs = torch.sigmoid(((prob_acts / temperature + self.base_bias)).clamp(min=-5, max=5))
         if torch.any(probs > 1) or torch.any(probs < 0):
             # Print out the problematic values
             invalid_probs = torch.logical_or(probs > 1, probs < 0)
@@ -147,7 +151,6 @@ class RLSAE(ExperimentSAEBase):
         self.rl_loss_weight = rl_loss_weight
         self.base_L0 = base_L0
         self.initial_temperature = initial_temperature
-        self.current_temperature = initial_temperature
         self.min_temperature = min_temperature
         self.temperature_tau = temperature_tau
         self.loss_stats_momentum = loss_stats_momentum
@@ -179,7 +182,7 @@ class RLSAE(ExperimentSAEBase):
             L0_penalty=self.L0_penalty,
             num_samples=self.num_samples,
             base_L0=self.base_L0,
-            temperature=self.current_temperature,
+            temperature=self.initial_temperature,
         )
         
         # Initialize running statistics as torch tensors on the correct device
@@ -255,13 +258,16 @@ class RLSAE(ExperimentSAEBase):
         
         return torch.clamp(torch.sqrt(mse_var), min=1e-8), torch.clamp(torch.sqrt(selector_var), min=1e-8)
 
+    def current_temperature(self, iteration):
+        return self.min_temperature + (self.initial_temperature - self.min_temperature) * (0.5 ** (iteration / self.temperature_tau))
+
+
     def _forward(self, x, iteration=None):
         assert 'cuda' in str(self.device) and 'cuda' in str(next(self.rl_selector.parameters()).device), "Both SAE and RL selector must be on GPU"
         
         # Update temperature based on iteration if provided
         if iteration is not None and self.training:
-            self.current_temperature = self.min_temperature + (self.initial_temperature - self.min_temperature) * (0.5 ** (iteration / self.temperature_tau))
-            self.rl_selector.temperature = self.current_temperature
+            self.rl_selector.temperature = self.current_temperature(iteration)
 
         preacts = self._get_preacts(x)
 
@@ -312,7 +318,9 @@ class RLSAE(ExperimentSAEBase):
                 "mse_std": mse_std.item(),
                 "selector_mean": self.selector_loss_mean.item(),
                 "selector_std": selector_std.item(),
-                "temperature": self.current_temperature,
+                "temperature": self.current_temperature(iteration),
+                "iteration_inner": iteration,
+                "training": int(self.training),
             }
 
         else:
@@ -345,7 +353,7 @@ class RLSAE(ExperimentSAEBase):
     def optimize(self, x, optimizer, iteration=None):
         with torch.no_grad():
             preacts = self._get_preacts(x)
-            probs = self.rl_selector.get_probs(preacts, temperature=self.current_temperature)
+            probs = self.rl_selector.get_probs(preacts, temperature=self.current_temperature(iteration))
             
             sorted_probs = torch.sort(probs.flatten())[0]
             n = sorted_probs.size(0)
