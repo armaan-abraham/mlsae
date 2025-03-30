@@ -81,7 +81,7 @@ class RLFeatureSelector(nn.Module):
         return masks
 
     def get_feature_mags(self, x, mask):
-        magnitudes = (x * self.magnitude_scalar + self.magnitude_bias) * mask
+        magnitudes = torch.nn.functional.softplus(x * self.magnitude_scalar + self.magnitude_bias, beta=0.5) * mask
         return magnitudes
 
     def update_selector(self, masks, rewards):
