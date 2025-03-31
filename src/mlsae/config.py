@@ -20,7 +20,7 @@ class DataConfig:
     site: str = "resid_pre"
     layer: int = 1
     act_size_full: int = 128
-    act_size_full_multiple: int = 8
+    act_size_full_multiple: int = 16
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 20

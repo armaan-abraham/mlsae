@@ -63,7 +63,7 @@ def create_model_variants(base_class, param_grid):
 
 # mult-1
 class ExperimentSAERL(RLSAE):
-    def __init__(self, act_size: int, device: str = "cpu", rl_loss_weight=0.5, loss_stats_momentum=0.9, base_L0=64, num_samples=10):
+    def __init__(self, act_size: int, device: str = "cpu", rl_loss_weight=0.5, loss_stats_momentum=0.9, base_L0=32, num_samples=5):
         super().__init__(
             act_size=act_size,
             encoder_dim_mults=[],
@@ -71,7 +71,7 @@ class ExperimentSAERL(RLSAE):
             decoder_dim_mults=[],
             device=device,
             num_samples=num_samples,
-            L0_penalty=1e-3,
+            L0_penalty=2e-3,
             rl_loss_weight=rl_loss_weight,
             optimizer_type="sparse_adam",
             optimizer_config={"lr": 2e-3},
