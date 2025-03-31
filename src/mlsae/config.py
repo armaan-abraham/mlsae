@@ -9,7 +9,7 @@ import transformer_lens
 class DataConfig:
     seed: int = 49
     sae_batch_size_entries: int = 131072
-    act_block_size_sae_batch_size_mult: int = 256
+    act_block_size_sae_batch_size_mult: int = 128
 
     seq_len: int = 16
     llm_batch_size_seqs: int = 500
@@ -20,13 +20,13 @@ class DataConfig:
     site: str = "resid_pre"
     layer: int = 1
     act_size_full: int = 128
-    act_size_full_multiple: int = 16
+    act_size_full_multiple: int = 1
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
     dataset_batch_size_entries: int = 20
 
     n_token_blocks: int = 5
-    n_act_blocks: int = 2
+    n_act_blocks: int = 1
 
     @property
     def act_size(self) -> int:
