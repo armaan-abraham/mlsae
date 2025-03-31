@@ -319,8 +319,10 @@ class RLSAE(ExperimentSAEBase):
                 "selector_mean": self.selector_loss_mean.item(),
                 "selector_std": selector_std.item(),
                 "temperature": self.current_temperature(iteration),
-                "iteration_inner": iteration,
-                "training": int(self.training),
+                "magnitude_max": best_feature_acts.max().item(),
+                "magnitude_min": best_feature_acts.min().item(),
+                "magnitude_mean": best_feature_acts.mean().item(),
+                "magnitude_std": best_feature_acts.std().item(),
             }
 
         else:
