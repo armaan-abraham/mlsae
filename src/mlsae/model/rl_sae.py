@@ -40,9 +40,7 @@ class RLFeatureSelector(nn.Module):
 
     def get_probs(self, x, temperature=1.0):
         """Get activation probabilities from raw encoder outputs"""
-        prob_acts = (
-            (x - x.mean(dim=-1, keepdim=True)) / (x.std(dim=-1, keepdim=True) + 1e-6)
-        ) * self.prob_scalar + self.prob_bias
+        prob_acts = x * self.prob_scalar + self.prob_bias
         # Add selection bias to inputs for the probability calculation
         probs = torch.sigmoid(
             (prob_acts / temperature + self.base_bias).clamp(min=-5, max=5)
