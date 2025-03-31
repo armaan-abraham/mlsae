@@ -120,17 +120,17 @@ class SparseAdam(torch.optim.Optimizer):
                         if torch.is_tensor(v):
                             state[k] = v.to(*args, **kwargs)
         return self
-        
+
     def copy_state_from(self, source_optimizer):
         """
         Copy optimizer state from source optimizer.
-        
+
         Args:
             source_optimizer: The optimizer to copy state from
-            
+
         Returns:
             self with updated state
-            
+
         Raises:
             ValueError: If optimizers have different param group sizes or parameter shapes
         """
@@ -138,17 +138,21 @@ class SparseAdam(torch.optim.Optimizer):
             raise ValueError(
                 "Cannot copy between optimizers with different param group sizes."
             )
-        
-        for group_source, group_target in zip(source_optimizer.param_groups, self.param_groups):
-            for p_source, p_target in zip(group_source["params"], group_target["params"]):
+
+        for group_source, group_target in zip(
+            source_optimizer.param_groups, self.param_groups
+        ):
+            for p_source, p_target in zip(
+                group_source["params"], group_target["params"]
+            ):
                 if p_target.requires_grad:
                     if p_target.data.size() != p_source.data.size():
                         raise ValueError("Parameter size mismatch between optimizers.")
-                    
+
                     # Get state dictionaries for both parameters
                     state_source = source_optimizer.state[p_source]
                     state_target = self.state[p_target]
-                    
+
                     # Copy each state tensor
                     for key in state_source:
                         if torch.is_tensor(state_source[key]):
@@ -160,5 +164,5 @@ class SparseAdam(torch.optim.Optimizer):
                         else:
                             # Copy non-tensor state (e.g., scalars)
                             state_target[key] = state_source[key]
-        
+
         return self

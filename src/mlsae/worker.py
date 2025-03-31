@@ -14,6 +14,7 @@ from mlsae.shared_memory import SharedMemory
 
 import os
 
+
 class TaskType(enum.Enum):
     TOKENS = 0
     ACTS = 1
@@ -40,7 +41,9 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
 
             if cache_hit:
                 token_block = torch.load(token_block_path, map_location="cpu")
-                logging.info(f"Loaded token block {token_block_cache_idx} from {token_block_path}")
+                logging.info(
+                    f"Loaded token block {token_block_cache_idx} from {token_block_path}"
+                )
             else:
                 token_block = next(token_stream)
 
@@ -56,7 +59,9 @@ def cpu_worker(tasks: mp.Queue, results: mp.Queue, shared_memory: SharedMemory):
             )
 
             if not cache_hit:
-                logging.info(f"Saving token block {token_block_cache_idx} to {token_block_path}")
+                logging.info(
+                    f"Saving token block {token_block_cache_idx} to {token_block_path}"
+                )
                 torch.save(token_block, token_block_path)
                 logging.info(f"Successfully saved token block {token_block_cache_idx}")
 
@@ -117,25 +122,48 @@ def generate_acts_from_tokens(
                     return_cache_object=True,
                 )
                 acts = cache.cache_dict[data_cfg.act_name]
-                assert acts.shape[1:3] == (data_cfg.seq_len, data_cfg.act_size_full), f"Expected shape ({data_cfg.seq_len}, {data_cfg.act_size_full}), got {acts.shape[1:3]}"
+                assert (
+                    acts.shape[1:3] == (data_cfg.seq_len, data_cfg.act_size_full)
+                ), f"Expected shape ({data_cfg.seq_len}, {data_cfg.act_size_full}), got {acts.shape[1:3]}"
                 batch_size_seqs = acts.shape[0]
-                
-                alt_acts = einops.rearrange(acts, "batch seq (act_chunk act_size) -> batch seq act_chunk act_size", act_size=data_cfg.act_size, act_chunk=data_cfg.act_size_full_multiple)
-                alt_acts = einops.rearrange(alt_acts, "batch seq act_chunk act_size -> (batch seq act_chunk) act_size", act_size=data_cfg.act_size)
 
-                acts = einops.rearrange(acts, "batch seq (act_chunk act_size) -> (batch seq act_chunk) act_size", act_size=data_cfg.act_size)
+                alt_acts = einops.rearrange(
+                    acts,
+                    "batch seq (act_chunk act_size) -> batch seq act_chunk act_size",
+                    act_size=data_cfg.act_size,
+                    act_chunk=data_cfg.act_size_full_multiple,
+                )
+                alt_acts = einops.rearrange(
+                    alt_acts,
+                    "batch seq act_chunk act_size -> (batch seq act_chunk) act_size",
+                    act_size=data_cfg.act_size,
+                )
+
+                acts = einops.rearrange(
+                    acts,
+                    "batch seq (act_chunk act_size) -> (batch seq act_chunk) act_size",
+                    act_size=data_cfg.act_size,
+                )
 
                 assert torch.allclose(acts, alt_acts)
 
                 # We chunk up the original llm activations and treat these
                 # chunks as individual SAE inputs for quicker experimentation
-                assert acts.shape == (batch_size_seqs * data_cfg.seq_len * data_cfg.act_size_full_multiple, data_cfg.act_size)
+                assert acts.shape == (
+                    batch_size_seqs
+                    * data_cfg.seq_len
+                    * data_cfg.act_size_full_multiple,
+                    data_cfg.act_size,
+                )
                 all_acts.append(acts)
-        
-    
 
     result = torch.cat(all_acts, dim=0)
-    assert result.shape == (data_cfg.act_block_size_seqs * data_cfg.seq_len * data_cfg.act_size_full_multiple, data_cfg.act_size)
+    assert result.shape == (
+        data_cfg.act_block_size_seqs
+        * data_cfg.seq_len
+        * data_cfg.act_size_full_multiple,
+        data_cfg.act_size,
+    )
     return result
 
 
@@ -192,15 +220,18 @@ def init_optimizer(model: DeepSAE):
     # Use the model's optimizer configuration if available
     optimizer_type = getattr(model, "optimizer_type", "sparse_adam")
     optimizer_config = getattr(model, "optimizer_config", {})
-    
+
     if optimizer_type == "mixed_muon":
         from mlsae.optimizer.mixed_muon import MixedMuon
+
         return MixedMuon(model.parameters(), **optimizer_config)
     elif optimizer_type == "sparse_adam":
         from mlsae.optimizer.sparse_adam import SparseAdam
+
         return SparseAdam(model.parameters(), **optimizer_config)
     elif optimizer_type == "SGD":
         from torch.optim import SGD
+
         return SGD(model.parameters(), **optimizer_config)
     else:
         raise ValueError(f"Unknown optimizer type: {optimizer_type}")
@@ -261,7 +292,7 @@ def task_train(
 
         act_freq_batch = (feature_acts != 0).float().mean(dim=0)
         act_freq_history += act_freq_batch
-        
+
         # Calculate the average number of nonzero features per example in the batch
         avg_nonzero_features = (feature_acts != 0).float().sum(dim=1).mean().item()
 
@@ -280,7 +311,7 @@ def task_train(
             # Skip metrics we've already logged
             if key in metrics:
                 continue
-                
+
             # Check if it's a scalar value we can log
             if isinstance(value, (float, int)):
                 metrics[key] = value
@@ -312,7 +343,6 @@ def task_train(
     shared_memory["n_iter"][model_idx].copy_(n_iter)
     shared_memory["models"][model_idx].copy_tensors_(model)
     shared_memory["optimizers"][model_idx].copy_state_from(optimizer)
-
 
     del model
 

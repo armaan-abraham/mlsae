@@ -52,7 +52,9 @@ class DataConfig:
     def act_name(self) -> str:
         return transformer_lens.utils.get_act_name(self.site, self.layer)
 
+
 data_cfg = DataConfig()
+
 
 @dataclass
 class TrainConfig:
@@ -67,11 +69,18 @@ class TrainConfig:
     def num_tokens(self) -> int:
         return self.num_entries // data_cfg.act_size_full_multiple
 
+
 train_cfg = TrainConfig()
 
 assert data_cfg.act_block_size_tokens % data_cfg.seq_len == 0
 assert data_cfg.sae_batch_size_tokens % data_cfg.act_size_full_multiple == 0
-assert data_cfg.act_block_size_seqs == data_cfg.sae_batch_size_entries / data_cfg.act_size_full_multiple / data_cfg.seq_len * data_cfg.act_block_size_sae_batch_size_mult
+assert (
+    data_cfg.act_block_size_seqs
+    == data_cfg.sae_batch_size_entries
+    / data_cfg.act_size_full_multiple
+    / data_cfg.seq_len
+    * data_cfg.act_block_size_sae_batch_size_mult
+)
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 

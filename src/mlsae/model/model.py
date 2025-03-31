@@ -62,11 +62,11 @@ class DeepSAE(nn.Module):
         self.device = str(device)
         self.weight_decay = weight_decay
         self.optimize_steps = optimize_steps
-        
+
         # Simplified topk setup
         self.topk = topk
         assert self.topk < self.sparse_dim, f"TopK value must be less than sparse dim"
-        
+
         self.act_squeeze = act_squeeze
 
         self.track_acts_stats = False
@@ -85,7 +85,7 @@ class DeepSAE(nn.Module):
 
         for i, dim in enumerate(self.encoder_dims):
             linear_layer = self._create_linear_layer(in_dim, dim)
-            
+
             self.weight_decay_params.append(linear_layer.weight)
             self.no_weight_decay_params.append(linear_layer.bias)
 
@@ -93,18 +93,16 @@ class DeepSAE(nn.Module):
 
             if i == len(self.encoder_dims) - 1:
                 layer_norm = nn.LayerNorm(dim)
-                
+
                 self.no_weight_decay_params.append(layer_norm.weight)
                 self.no_weight_decay_params.append(layer_norm.bias)
                 modules.append(layer_norm)
 
-            self.dense_encoder_blocks.append(
-                torch.nn.Sequential(*modules)
-            )
+            self.dense_encoder_blocks.append(torch.nn.Sequential(*modules))
             in_dim = dim
 
         sparse_layer = self._create_linear_layer(in_dim, self.sparse_dim)
-        
+
         self.weight_decay_params.append(sparse_layer.weight)
         self.no_weight_decay_params.append(sparse_layer.bias)
 
@@ -118,27 +116,25 @@ class DeepSAE(nn.Module):
 
         for dim in self.decoder_dims:
             linear_layer = self._create_linear_layer(in_dim, dim, normalize=True)
-            
+
             self.weight_decay_params.append(linear_layer.weight)
             self.no_weight_decay_params.append(linear_layer.bias)
-            
-            self.decoder_blocks.append(
-                nn.Sequential(linear_layer, nn.ReLU())
-            )
+
+            self.decoder_blocks.append(nn.Sequential(linear_layer, nn.ReLU()))
             in_dim = dim
 
         final_layer = self._create_linear_layer(in_dim, self.act_size, normalize=True)
-        
+
         self.weight_decay_params.append(final_layer.weight)
         self.no_weight_decay_params.append(final_layer.bias)
-        
+
         self.decoder_blocks.append(final_layer)
 
     def _init_params(self):
         # Initialize lists to track parameters for weight decay
         self.weight_decay_params = []
         self.no_weight_decay_params = []
-        
+
         self._init_encoder_params()
         self._init_decoder_params()
         self._tie_weights()
@@ -156,9 +152,13 @@ class DeepSAE(nn.Module):
         decoder_linears = []
         for module in self.decoder_blocks:
             if isinstance(module, nn.Sequential):
-                decoder_linears.append(module[0])  # Get Linear from Sequential(Linear, ReLU)
+                decoder_linears.append(
+                    module[0]
+                )  # Get Linear from Sequential(Linear, ReLU)
             else:
-                decoder_linears.append(module)  # The final layer is just a Linear module
+                decoder_linears.append(
+                    module
+                )  # The final layer is just a Linear module
 
         # Pair layers until either encoder or decoder runs out
         # Last encoder layer pairs with first decoder layer, etc.
@@ -191,7 +191,6 @@ class DeepSAE(nn.Module):
 
     def _get_preacts(self, resid):
         if self.encoder_dims:
-
             for block in self.dense_encoder_blocks:
                 out = block(resid)
 
@@ -201,7 +200,7 @@ class DeepSAE(nn.Module):
                 else:
                     assert out.shape[1] > resid.shape[1]
                     padding = torch.zeros_like(out)
-                    padding[:, :resid.shape[1]] = resid
+                    padding[:, : resid.shape[1]] = resid
                     resid = out + padding
 
             # Dead neuron counts are very sensitive to initial scaling. I have
@@ -210,18 +209,18 @@ class DeepSAE(nn.Module):
             # with the layernorm, we initially divide by the L2 norm (as std and
             # L2 norm are proportional).
             resid = resid / torch.sqrt(torch.tensor(resid.shape[-1]))
-        
+
         resid = self.preact_block(resid)
-        
+
         return resid
-    
+
     def _decode(self, feature_acts):
         resid = self.decoder_blocks[0](feature_acts)
 
         if len(self.decoder_blocks) > 1:
             for block in self.decoder_blocks[1:-1]:
                 resid = block(resid) + resid
-            
+
             resid = self.decoder_blocks[-1](resid)
 
         return resid
@@ -238,7 +237,7 @@ class DeepSAE(nn.Module):
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
-        
+
         loss = mse_loss
 
         return {
@@ -267,68 +266,72 @@ class DeepSAE(nn.Module):
             self.mse_count += 1
 
         return result
-    
+
     def optimize(self, x, optimizer, iteration=None):
         # Store the first result for returning
         first_result = None
-        
+
         # Calculate initial preacts and their top-k indices
         with torch.no_grad():
             initial_preacts = self._get_preacts(x)
             current_topk = self.topk
             _, initial_topk_indices = torch.topk(initial_preacts, current_topk, dim=-1)
-        
+
         # Run multiple optimization steps on the same batch
         for step in range(self.optimize_steps):
             # Get forward results
             result = self.forward(x, iteration=iteration)
             loss = result["loss"]
-            
+
             # Save the first result to return
             if step == 0:
                 first_result = result
-            
+
             # Backpropagate
             loss.backward()
-            
+
             # Process gradients (gradient clipping, etc.)
             self.process_gradients()
-            
+
             # Update parameters
             optimizer.step()
             optimizer.zero_grad()
-        
+
         # Calculate final preacts and their top-k indices
         with torch.no_grad():
             final_preacts = self._get_preacts(x)
             _, final_topk_indices = torch.topk(final_preacts, current_topk, dim=-1)
-            
+
             # Calculate churn (percentage of indices that changed)
             # Create a full-sized mask where matching indices are marked
             batch_size, sparse_dim = initial_preacts.shape
             match_mask = torch.zeros(batch_size, sparse_dim, device=x.device)
-            
+
             # Set 1s at the positions of initial indices
             match_mask.scatter_(1, initial_topk_indices, 1.0)
-            
+
             # For final indices that also appear in initial indices, they'll remain 1
             # For final indices that weren't in initial, they'll be set to 1 (making a 2)
-            match_mask.scatter_(1, final_topk_indices, match_mask.gather(1, final_topk_indices) + 1.0)
-            
+            match_mask.scatter_(
+                1, final_topk_indices, match_mask.gather(1, final_topk_indices) + 1.0
+            )
+
             # Count how many indices appear in both sets (have value 2 in the mask)
             matching_count = (match_mask == 2.0).sum().float()
             total_count = batch_size * current_topk
-            
+
             # Calculate churn as percentage of changed indices
             topk_churn = 1.0 - (matching_count / total_count)
             first_result["topk_churn"] = topk_churn.item()
-        
+
         first_result["optimizer_step"] = optimizer.get_step()
         optimizer_exp_avg = optimizer.state[list(optimizer.state.keys())[0]]["exp_avg"]
         first_result["optimizer_exp_avg_mean"] = optimizer_exp_avg.mean()
-        optimizer_exp_avg_sq = optimizer.state[list(optimizer.state.keys())[0]]["exp_avg_sq"]
+        optimizer_exp_avg_sq = optimizer.state[list(optimizer.state.keys())[0]][
+            "exp_avg_sq"
+        ]
         first_result["optimizer_exp_avg_sq_mean"] = optimizer_exp_avg_sq.mean()
-        
+
         return first_result
 
     def get_activation_stats(self):
@@ -392,13 +395,13 @@ class DeepSAE(nn.Module):
             "act_squeeze": self.act_squeeze,
             "name": self.name,
         }
-        
+
         # Add optimizer configuration if defined in an ExperimentSAEBase subclass
         if hasattr(self, "optimizer_type"):
             config["optimizer_type"] = self.optimizer_type
         if hasattr(self, "optimizer_config"):
             config["optimizer_config"] = self.optimizer_config
-            
+
         return config
 
     @classmethod
@@ -469,34 +472,31 @@ class DeepSAE(nn.Module):
         Returns parameter groups for optimization:
         1. Encoder weights - with weight decay
         2. All other parameters (biases, layer norm, decoder) - without weight decay
-        
+
         Returns:
             List of parameter group dictionaries for optimizer
         """
         return [
-            {'params': self.weight_decay_params, 'weight_decay': self.weight_decay},
-            {'params': self.no_weight_decay_params, 'weight_decay': 0.0}
+            {"params": self.weight_decay_params, "weight_decay": self.weight_decay},
+            {"params": self.no_weight_decay_params, "weight_decay": 0.0},
         ]
-
-
 
 
 class ExperimentSAEBase(DeepSAE):
     """Base class for all experimental SAE models.
     Automatically extracts the name from the class name (text after 'ExperimentSAE').
     """
-    def __init__(self, *args, optimizer_type="sparse_adam", optimizer_config=None, **kwargs):
+
+    def __init__(
+        self, *args, optimizer_type="sparse_adam", optimizer_config=None, **kwargs
+    ):
         # Extract model name from class name (e.g., ExperimentSAE0 -> "0")
         class_name = self.__class__.__name__
-        model_name = class_name[len("ExperimentSAE"):]
-        
+        model_name = class_name[len("ExperimentSAE") :]
+
         # Set optimizer configuration
         self.optimizer_type = optimizer_type
         self.optimizer_config = optimizer_config or {}
-        
+
         # Pass this to the parent class
-        super().__init__(
-            *args,
-            name=model_name,
-            **kwargs
-        )
+        super().__init__(*args, name=model_name, **kwargs)
