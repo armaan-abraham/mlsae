@@ -72,10 +72,10 @@ class ExperimentSAERL(RLSAE):
         self,
         act_size: int,
         device: str = "cpu",
-        rl_loss_weight=0.5,
+        rl_loss_weight=1e-2,
         loss_stats_momentum=0.9,
-        base_L0=32,
-        num_samples=5,
+        base_L0=512,
+        num_samples=10,
     ):
         super().__init__(
             act_size=act_size,
@@ -84,16 +84,16 @@ class ExperimentSAERL(RLSAE):
             decoder_dim_mults=[],
             device=device,
             num_samples=num_samples,
-            L0_penalty=2e-3,
+            L0_penalty=5e-5,
             rl_loss_weight=rl_loss_weight,
             optimizer_type="sparse_adam",
             optimizer_config={"lr": 2e-3},
             optimize_steps=1,
             loss_stats_momentum=loss_stats_momentum,
             base_L0=base_L0,
-            initial_temperature=5,
+            initial_temperature=6,
             min_temperature=1.0,
-            temperature_tau=2000,
+            temperature_tau=4000,
         )
 
 
