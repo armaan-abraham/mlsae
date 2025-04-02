@@ -72,8 +72,8 @@ class ExperimentSAERL(RLSAE):
         self,
         act_size: int,
         device: str = "cpu",
-        rl_loss_weight=1e-2,
         initial_temperature=6,
+        temperature_tau=4000,
     ):
         super().__init__(
             act_size=act_size,
@@ -83,7 +83,7 @@ class ExperimentSAERL(RLSAE):
             device=device,
             num_samples=10,
             L0_penalty=5e-5,
-            rl_loss_weight=rl_loss_weight,
+            rl_loss_weight=0.6,
             optimizer_type="sparse_adam",
             optimizer_config={"lr": 2e-3},
             optimize_steps=1,
@@ -91,7 +91,7 @@ class ExperimentSAERL(RLSAE):
             base_L0=512,
             initial_temperature=initial_temperature,
             min_temperature=1.0,
-            temperature_tau=4000,
+            temperature_tau=temperature_tau,
         )
 
 experiment_variants = create_model_variants(
@@ -100,12 +100,13 @@ experiment_variants = create_model_variants(
         "initial_temperature": [
             6,
             12,
+            24,
         ],
-        "rl_loss_weight": [
-            0.2,
-            0.4,
-            0.6,
-        ],
+        "temperature_tau": [
+            4000,
+            8000,
+            16000,
+        ]
     }
 )
 
