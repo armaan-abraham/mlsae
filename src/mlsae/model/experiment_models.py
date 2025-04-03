@@ -67,64 +67,63 @@ def create_model_variants(base_class, param_grid):
 
 
 # mult-1
-class ExperimentSAERL(RLSAE):
-    def __init__(
-        self,
-        act_size: int,
-        device: str = "cpu",
-        initial_temperature=6,
-        temperature_tau=4000,
-    ):
-        super().__init__(
-            act_size=act_size,
-            encoder_dim_mults=[],
-            sparse_dim_mult=8,
-            decoder_dim_mults=[],
-            device=device,
-            num_samples=10,
-            L0_penalty=5e-5,
-            rl_loss_weight=0.6,
-            optimizer_type="sparse_adam",
-            optimizer_config={"lr": 2e-3},
-            optimize_steps=1,
-            loss_stats_momentum=0.9,
-            base_L0=512,
-            initial_temperature=initial_temperature,
-            min_temperature=1.0,
-            temperature_tau=temperature_tau,
-        )
-
-experiment_variants = create_model_variants(
-    ExperimentSAERL,
-    {
-        "initial_temperature": [
-            6,
-            12,
-            24,
-        ],
-        "temperature_tau": [
-            4000,
-            8000,
-            16000,
-        ]
-    }
-)
-
-
-# class ExperimentSAETopK(ExperimentSAEBase):
-#     def __init__(self, act_size: int, device: str = "cpu"):
+# class ExperimentSAERL(RLSAE):
+#     def __init__(
+#         self,
+#         act_size: int,
+#         device: str = "cpu",
+#         initial_temperature=6,
+#         temperature_tau=4000,
+#     ):
 #         super().__init__(
 #             act_size=act_size,
 #             encoder_dim_mults=[],
 #             sparse_dim_mult=8,
 #             decoder_dim_mults=[],
 #             device=device,
-#             topk=8,
+#             num_samples=10,
+#             L0_penalty=5e-5,
+#             rl_loss_weight=0.6,
 #             optimizer_type="sparse_adam",
-#             optimizer_config={"lr": 5e-4},
+#             optimizer_config={"lr": 2e-3},
 #             optimize_steps=1,
-#             weight_decay=0,
-#             act_squeeze=0,
+#             loss_stats_momentum=0.9,
+#             base_L0=512,
+#             initial_temperature=initial_temperature,
+#             min_temperature=1.0,
+#             temperature_tau=temperature_tau,
 #         )
 
 
+
+
+class ExperimentSAETopK(ExperimentSAEBase):
+    def __init__(self, act_size: int, device: str = "cpu", lr: float = 1e-3, topk: int = 9):
+        super().__init__(
+            act_size=act_size,
+            encoder_dim_mults=[],
+            sparse_dim_mult=8,
+            decoder_dim_mults=[],
+            device=device,
+            topk=topk,
+            optimizer_type="sparse_adam",
+            optimizer_config={"lr": lr},
+            optimize_steps=1,
+            weight_decay=0,
+            act_squeeze=0,
+        )
+
+
+experiment_variants = create_model_variants(
+    ExperimentSAETopK,
+    {
+        "lr": [
+            5e-4,
+            1e-3,
+        ],
+        "topk": [
+            9,
+            10,
+        ],
+    }
+)
