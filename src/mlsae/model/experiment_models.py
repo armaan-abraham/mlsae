@@ -121,7 +121,6 @@ experiment_variants = create_model_variants(
             1e1,
         ],
         "initial_temperature": [
-            12,
             24,
             48,
         ],
