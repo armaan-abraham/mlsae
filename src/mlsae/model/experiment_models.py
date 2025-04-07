@@ -88,7 +88,7 @@ class ExperimentSAERL(RLSAE):
             optimizer_type="sparse_adam",
             optimizer_config={"lr": 2e-3},
             optimize_steps=1,
-            base_L0=512,
+            base_L0=9,
             initial_temperature=initial_temperature,
             min_temperature=1.0,
             temperature_tau=temperature_tau,
@@ -116,13 +116,14 @@ experiment_variants = create_model_variants(
     ExperimentSAERL,
     {
         "rl_loss_weight": [
+            1e-3,
             1e-1,
-            1,
             1e1,
         ],
         "initial_temperature": [
             12,
             24,
+            48,
         ],
         "temperature_tau": [
             8000,
