@@ -43,7 +43,7 @@ class RLFeatureSelector(nn.Module):
         prob_acts = x * self.prob_scalar + self.prob_bias
         # Add selection bias to inputs for the probability calculation
         probs = torch.sigmoid(
-            (prob_acts / temperature + self.base_bias).clamp(min=-5, max=5)
+            (prob_acts / temperature + self.base_bias).clamp(min=-15, max=15)
         )
         if torch.any(probs > 1) or torch.any(probs < 0):
             # Print out the problematic values
@@ -342,7 +342,7 @@ class RLSAE(ExperimentSAEBase):
             selector_norm = (selector_loss - self.selector_loss_mean) / selector_std
 
             # Combine normalized losses with weighting
-            final_loss = mse_norm + self.rl_loss_weight * selector_norm
+            final_loss = mse_loss + self.rl_loss_weight * selector_loss
 
             result = {
                 "loss": final_loss,
