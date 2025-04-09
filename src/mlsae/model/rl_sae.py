@@ -342,7 +342,7 @@ class RLSAE(ExperimentSAEBase):
             selector_norm = (selector_loss - self.selector_loss_mean) / selector_std
 
             # Combine normalized losses with weighting
-            final_loss = mse_loss + self.rl_loss_weight * selector_loss
+            final_loss = mse_norm + self.rl_loss_weight * selector_norm
 
             result = {
                 "loss": final_loss,
