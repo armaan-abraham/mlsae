@@ -338,8 +338,8 @@ class RLSAE(ExperimentSAEBase):
 
             # Calculate normalized losses
             mse_std, selector_std = self._get_loss_stds()
-            mse_norm = (mse_loss - self.mse_loss_mean) / mse_std
-            selector_norm = (selector_loss - self.selector_loss_mean) / selector_std
+            mse_norm = mse_loss / mse_std
+            selector_norm = selector_loss / selector_std
 
             # Combine normalized losses with weighting
             final_loss = mse_norm + self.rl_loss_weight * selector_norm
