@@ -232,13 +232,27 @@ def task_train(
 
         # Use dictionary return format
         result = model(acts, iteration=n_iter)
-        loss = result["loss"]
+        loss = result["loss"] / model.num_grad_accum_steps
         feature_acts = result["feature_acts"]
         
         loss.backward()
-        model.process_gradients()
-        optimizer.step()
-        optimizer.zero_grad()
+
+        # Calculate gradient statistics
+        with torch.no_grad():
+            grad_norm = 0.0
+            grad_max = float('-inf')
+            grad_min = float('inf')
+            for param in model.parameters():
+                if param.grad is not None:
+                    grad_norm += param.grad.norm(2).item() ** 2
+                    grad_max = max(grad_max, param.grad.max().item())
+                    grad_min = min(grad_min, param.grad.min().item())
+            grad_norm = grad_norm ** 0.5
+
+        if (n_iter + 1) % model.num_grad_accum_steps == 0:
+            model.process_gradients()
+            optimizer.step()
+            optimizer.zero_grad()
 
         if start == 0:
             logging.info(
@@ -254,11 +268,14 @@ def task_train(
         # store step metrics
         baseline_mse = get_baseline_mse(acts)
         metrics = {
-            "loss": loss.item(),
+            "loss": result["loss"].item(),
             "mse": result["mse_loss"].item(),
             "mse_baseline": baseline_mse.item(),
             "mse_normalized": (result["mse_loss"] / baseline_mse).item(),
             "avg_nonzero_features": avg_nonzero_features,
+            "grad_norm": grad_norm,
+            "grad_min": grad_min,
+            "grad_max": grad_max,
         }
 
         # Log all values in result that are float, int, or tensor of size 1

@@ -13,25 +13,25 @@ from mlsae.config import DTYPES
 model_dir = Path(__file__).parent / "checkpoints"
 
 
-class TopKActivation(nn.Module):
-    """
-    A custom activation that keeps only the top k values along dim=1
-    (for each row in the batch), zeroing out the rest.
-    """
+# class TopKActivation(nn.Module):
+#     """
+#     A custom activation that keeps only the top k values along dim=1
+#     (for each row in the batch), zeroing out the rest.
+#     """
 
-    def __init__(self, k: int):
-        super().__init__()
-        self.k = k
+#     def __init__(self, k: int):
+#         super().__init__()
+#         self.k = k
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # If k >= number of features, do nothing
-        if self.k >= x.size(-1):
-            return x
-        # Otherwise, keep only top k
-        topk_vals, topk_idx = torch.topk(x, self.k, dim=-1)
-        mask = torch.zeros_like(x)
-        mask.scatter_(-1, topk_idx, 1.0)
-        return x * mask
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         # If k >= number of features, do nothing
+#         if self.k >= x.size(-1):
+#             return x
+#         # Otherwise, keep only top k
+#         topk_vals, topk_idx = torch.topk(x, self.k, dim=-1)
+#         mask = torch.zeros_like(x)
+#         mask.scatter_(-1, topk_idx, 1.0)
+#         return x * mask
 
 
 # TODO check imports of DeepSAE
@@ -45,8 +45,8 @@ class DeepSAE(nn.Module):
         name: str = None,
         enc_dtype: str = "fp32",
         device: str = "cpu",
-        topk: int = 16,
-        act_squeeze: float = 0,
+        num_grad_accum_steps: int = 1,
+        l1_reg: float = 1e-3,
     ):
         super().__init__()
 
@@ -58,15 +58,15 @@ class DeepSAE(nn.Module):
         self.enc_dtype = enc_dtype
         self.dtype = DTYPES[enc_dtype]
         self.device = str(device)
-        self.topk = topk
-        assert self.topk < self.sparse_dim, f"TopK must be less than sparse dim"
-        self.act_squeeze = act_squeeze
+        self.l1_reg = l1_reg
 
         self.track_acts_stats = False
         # Tracking stats
         self.acts_sum = 0.0
         self.acts_sq_sum = 0.0
         self.acts_elem_count = 0
+
+        self.num_grad_accum_steps = num_grad_accum_steps
 
         self._init_params()
 
@@ -86,7 +86,6 @@ class DeepSAE(nn.Module):
         self.sparse_encoder_block = torch.nn.Sequential(
             self._create_linear_layer(in_dim, self.sparse_dim),
             nn.ReLU(),
-            TopKActivation(self.topk),
         )
 
     def _init_decoder_params(self):
@@ -130,7 +129,7 @@ class DeepSAE(nn.Module):
             dec_layer = decoder_linears[i]  # Start from first decoder
             dec_layer.weight.data.copy_(enc_layer.weight.data.t())
             dec_layer.weight.data = dec_layer.weight.data / dec_layer.weight.data.norm(
-                dim=-1, keepdim=True
+                dim=0, keepdim=True
             )
 
     def start_act_stat_tracking(self):
@@ -171,25 +170,7 @@ class DeepSAE(nn.Module):
         # Access pre-topk activations from sparse_encoder_block
         # sparse_encoder_block is Sequential(Linear, ReLU, TopKActivation)
         linear_out = self.sparse_encoder_block[0](resid)  # Linear output
-        relu_out = self.sparse_encoder_block[1](linear_out)  # After ReLU, before TopK
-        
-        # Get pre-topk activations for inflation loss
-        pre_topk_acts = relu_out
-        
-        # Mean activation across batch for each feature
-        mean_acts_per_feature = pre_topk_acts.mean(dim=0)
-        
-        mean_acts_std = mean_acts_per_feature.std()
-        
-        act_squeeze_loss = mean_acts_std * self.act_squeeze
-        
-        # Continue with topk activation and the rest of the network
-        feature_acts = self.sparse_encoder_block[2](relu_out)  # Apply TopK
-        resid = feature_acts
-        
-        assert (
-            (feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)
-        ).all()
+        resid = feature_acts = self.sparse_encoder_block[1](linear_out)  # After ReLU, before TopK
 
         for block in self.decoder_blocks:
             resid = block(resid)
@@ -199,14 +180,24 @@ class DeepSAE(nn.Module):
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
         
-        loss = mse_loss + act_squeeze_loss
+        loss = mse_loss + self.l1_reg * feature_acts.abs().mean()
 
         return {
             "loss": loss,
             "mse_loss": mse_loss,
+            "l1": feature_acts.abs().mean(),
+
+            "preacts_mean": linear_out.mean(),
+            "preacts_std": linear_out.std(),
+            "preacts_max": linear_out.max(),
+            "preacts_min": linear_out.min(),
+            "acts_mean": feature_acts.mean(),
+            "acts_std": feature_acts.std(),
+            "acts_max": feature_acts.max(),
+            "acts_min": feature_acts.min(),
+
             "feature_acts": feature_acts,
             "reconstructed": reconstructed,
-            "act_squeeze_loss": act_squeeze_loss,
         }
 
     def forward(self, x, iteration=None):
@@ -249,9 +240,9 @@ class DeepSAE(nn.Module):
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
     def _make_decoder_weights_and_grad_unit_norm(self, weight):
-        w_normed = weight / weight.norm(dim=-1, keepdim=True)
+        w_normed = weight / weight.norm(dim=0, keepdim=True)
         if weight.grad is not None:
-            w_dec_grad_proj = (weight.grad * w_normed).sum(-1, keepdim=True) * w_normed
+            w_dec_grad_proj = (weight.grad * w_normed).sum(0, keepdim=True) * w_normed
             weight.grad -= w_dec_grad_proj
         weight.data = w_normed
 
@@ -281,8 +272,6 @@ class DeepSAE(nn.Module):
             "sparse_dim": self.sparse_dim,
             "act_size": self.act_size,
             "enc_dtype": self.enc_dtype,
-            "topk": self.topk,
-            "act_squeeze": self.act_squeeze,
             "name": self.name,
         }
         
@@ -341,8 +330,7 @@ class DeepSAE(nn.Module):
                 name=self.name,
                 enc_dtype=self.enc_dtype,
                 device=self.device,
-                topk=self.topk,
-                act_decay=self.act_decay,
+                l1_reg=self.l1_reg,
             )
 
         else:

@@ -15,14 +15,14 @@ class DataConfig:
     llm_batch_size_seqs: int = 300
 
     sae_dtype: str = "fp32"
-    model_name: str = "gpt2-small"
-    tokenizer_name: str = "gpt2"
+    model_name: str = "pythia-70m"
+    tokenizer_name: str = "EleutherAI/pythia-70m"
     site: str = "resid_pre"
-    layer: int = 9
-    act_size: int = 768
+    layer: int = 5
+    act_size: int = 512
     dataset_name: str = "allenai/c4"
     dataset_column_name: str = "text"
-    dataset_batch_size_entries: int = 50
+    dataset_batch_size_entries: int = 20
 
     n_token_blocks: int = 5
     n_act_blocks: int = 2
@@ -42,10 +42,10 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    num_tokens: int = int(7.5e9)
+    num_tokens: int = int(1e9)
     wandb_project: str = "mlsae"
     wandb_entity: str = "armaanabraham-independent"
-    save_to_s3: bool = True
+    save_to_s3: bool = False
 
     measure_dead_over_n_batches: int = 15
 
