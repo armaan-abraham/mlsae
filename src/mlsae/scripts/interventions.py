@@ -23,7 +23,8 @@
 
 # %%
 # Config
-device = "cpu"
+device = "cuda:0"
+
 
 # %%
 # Load SAE
@@ -37,12 +38,16 @@ arch_to_model_id = {
 }
 
 # Load SAE from S3
-sae = DeepSAE.load(
+sae_0_0 = DeepSAE.load(
     "0-0",
     model_id=arch_to_model_id["0-0"],
     load_from_s3=True,
 )
-sae.to(device)
+sae_2_2 = DeepSAE.load(
+    "2-2",
+    model_id=arch_to_model_id["2-2"],
+    load_from_s3=True,
+)
 
 # %%
 # Load target LLM
@@ -68,7 +73,7 @@ dataset_iter = iter(stream_training_chunks(
 
 import torch
 
-n_seqs = int(1e2)
+n_seqs = int(1e3)
 n_batches = n_seqs // dataset_iter_batch_size + 1
 
 tokens = []
@@ -84,159 +89,228 @@ print("Tokens shape:", tokens.shape)
 import numpy as np
 from mlsae.config import DTYPES, data_cfg
 
+
+def collect_feature_activations_and_logit_diffs(
+    model,
+    sae,
+    tokens,
+    feature_list,
+    batch_size=100,
+    device="cuda:0",
+):
+    """
+    Compute SAE feature activations and control-vs-ablated logit differences.
+
+    Returns
+    -------
+    all_feature_acts : torch.Tensor        # [n_seq, seq_len, n_features]
+    all_logit_diffs  : torch.Tensor        # [n_seq, seq_len-1, n_features]
+    mse_list         : list[torch.Tensor]  # Per-batch reconstruction MSE
+    """
+    import torch
+
+    logit_diffs_list = []
+    feature_acts_list = []
+    mse_list = []
+
+    sae.to(device)
+
+    with torch.no_grad():
+        with torch.autocast(device, dtype=DTYPES[data_cfg.sae_dtype]):
+            for start in range(0, tokens.shape[0], batch_size):
+                # Get batch of tokens
+                end = min(start + batch_size, tokens.shape[0])
+                token_subblock = tokens[start:end].to(device)
+
+                _, cache = model.run_with_cache(
+                    token_subblock,
+                    stop_at_layer=data_cfg.layer + 1,
+                    names_filter=data_cfg.act_name,
+                )
+                acts = cache.cache_dict[data_cfg.act_name]  # [batch, seq, d_model]
+
+                # Flatten -> normalise -> SAE forward
+                batch_sz, seq_len, d_model = acts.shape
+                acts_flat = acts.reshape(-1, d_model)
+
+                acts_mean = acts_flat.mean(dim=-1)
+                acts_norm = acts_flat.norm(dim=-1)
+                acts_normalized = (
+                    acts_flat - acts_mean.unsqueeze(-1)
+                ) / acts_norm.unsqueeze(-1)
+
+                _, _, mse, feature_acts, reconstructed = sae.forward(acts_normalized)
+                print(
+                    f"Batch {start//batch_size + 1}: MSE = {mse.item():.2e}"
+                )
+                mse_list.append(mse)
+
+                # Reshape back to [batch, seq, …]
+                feature_acts_reshaped = feature_acts.reshape(batch_sz, seq_len, -1)
+                reconstructed_reshaped = reconstructed.reshape(batch_sz, seq_len, -1)
+                acts_mean = acts_mean.reshape(batch_sz, seq_len)
+                acts_norm = acts_norm.reshape(batch_sz, seq_len)
+
+                feature_acts_list.append(
+                    feature_acts_reshaped[:, :, feature_list]
+                )
+
+                # ===== logit differences =====
+                n_features = len(feature_list)
+                ground_truth_tokens = token_subblock[:, 1:]
+                logit_diffs = torch.zeros(
+                    batch_sz, seq_len - 1, n_features, device=device
+                )
+
+                for feat_idx, feat_id in enumerate(feature_list):
+                    feature_activations = feature_acts_reshaped[:, :, feat_id]
+                    activation_positions = torch.nonzero(
+                        feature_activations[:, :-1] != 0
+                    )
+
+                    if len(activation_positions) == 0:
+                        continue
+
+                    ctrl_recons, abl_recons = [], []
+                    batch_idx_list, seq_idx_list = [], []
+
+                    for b_idx, s_idx in activation_positions:
+                        b, s = b_idx.item(), s_idx.item()
+                        batch_idx_list.append(b)
+                        seq_idx_list.append(s)
+
+                        ctrl_rec = reconstructed_reshaped[b, s]
+                        ctrl_rec = (
+                            ctrl_rec * acts_norm[b, s] + acts_mean[b, s]
+                        )
+                        ctrl_recons.append(ctrl_rec)
+
+                        fa_pos = feature_acts_reshaped[b, s].clone()
+                        fa_pos[feat_id] = 0
+                        abl_rec = sae._decode(fa_pos.unsqueeze(0)).squeeze(0)
+                        abl_rec = abl_rec * acts_norm[b, s] + acts_mean[b, s]
+                        abl_recons.append(abl_rec)
+
+                    ctrl_recons = torch.stack(ctrl_recons)
+                    abl_recons = torch.stack(abl_recons)
+
+                    def make_hook(idxs_b, idxs_s, recons):
+                        def hook(tensor, hook=None, **kwargs):
+                            for i, (bb, ss) in enumerate(zip(idxs_b, idxs_s)):
+                                tensor[bb, ss] = recons[i]
+                            return tensor
+                        return hook
+
+                    ctrl_logits = model.run_with_hooks(
+                        token_subblock,
+                        fwd_hooks=[(data_cfg.act_name, make_hook(batch_idx_list, seq_idx_list, ctrl_recons))],
+                    )
+                    abl_logits = model.run_with_hooks(
+                        token_subblock,
+                        fwd_hooks=[(data_cfg.act_name, make_hook(batch_idx_list, seq_idx_list, abl_recons))],
+                    )
+
+                    for i, (b, s) in enumerate(zip(batch_idx_list, seq_idx_list)):
+                        gt = ground_truth_tokens[b, s]
+                        logit_diffs[b, s, feat_idx] = (
+                            ctrl_logits[b, s, gt] - abl_logits[b, s, gt]
+                        )
+
+                logit_diffs_list.append(logit_diffs)
+
+    sae.cpu()
+
+    # -------- concatenate across batches --------
+    all_feature_acts = torch.cat(feature_acts_list, dim=0).cpu()
+    all_logit_diffs = torch.cat(logit_diffs_list, dim=0).cpu()
+    return all_feature_acts, all_logit_diffs, mse_list
+
+# %%
+
 # Features to collect activations for. This will iterate over raw features in
 # the SAE; dead features in this list will not be skipped.
-feature_list = np.arange(5)
+feature_list = np.arange(100)
 
-# (1) We want to run the target LLM on all of the tokens, and store the SAE
-# activations for each token
-llm_sae_batch_size_seqs = 5
-logit_diffs_list = []  # Store differences between control and ablated logits
-feature_acts_list = []
-mse_list = []
+# Collect activations / logit diffs in one call
+all_feature_acts_0_0, all_logit_diffs_0_0, mse_list_0_0 = collect_feature_activations_and_logit_diffs(
+    model=model,
+    sae=sae_0_0,
+    tokens=tokens,
+    feature_list=feature_list,
+    device=device,
+)
 
-# Process all tokens in batches
-with torch.no_grad():
-    with torch.autocast(device, dtype=DTYPES[data_cfg.sae_dtype]):
-        for start in range(0, tokens.shape[0], llm_sae_batch_size_seqs):
-            # Get batch of tokens
-            end = min(start + llm_sae_batch_size_seqs, tokens.shape[0])
-            token_subblock = tokens[start:end].to(device)
-            
-            _, cache = model.run_with_cache(
-                token_subblock,
-                stop_at_layer=data_cfg.layer + 1,
-                names_filter=data_cfg.act_name,
-            )
-            acts = cache.cache_dict[data_cfg.act_name] # [seq tok d_model]
-            
-            # Store original shape for later
-            batch_size, seq_len, d_model = acts.shape
-            
-            acts_flat = acts.reshape(-1, acts.shape[-1]) # [(seq tok) d_model]
+print(f"\nCollected activations for {all_feature_acts_0_0.shape[0]} sequences")
 
-            # Preprocess activations and store so we can apply the inverse
-            # transformation on the SAE reconstruction
-            acts_mean = acts_flat.mean(dim=-1)
-            acts_norm = acts_flat.norm(dim=-1)
-            acts_normalized = (acts_flat - acts_mean.unsqueeze(-1)) / acts_norm.unsqueeze(-1)
+# %%
 
-            _, _, mse, feature_acts, reconstructed = sae.forward(acts_normalized)
+# Collect activations / logit diffs in one call
+all_feature_acts_2_2, all_logit_diffs_2_2, mse_list_2_2 = collect_feature_activations_and_logit_diffs(
+    model=model,
+    sae=sae_2_2,
+    tokens=tokens,
+    feature_list=feature_list,
+    device=device,
+)
 
-            print(f"Batch {start//llm_sae_batch_size_seqs + 1}: MSE = {mse.item():.2e}")
-
-            mse_list.append(mse)
-            
-            # Reshape arrays back to batch format
-            feature_acts_reshaped = feature_acts.reshape(batch_size, seq_len, -1)
-            reconstructed_reshaped = reconstructed.reshape(batch_size, seq_len, -1)
-            acts_mean_reshaped = acts_mean.reshape(batch_size, seq_len)
-            acts_norm_reshaped = acts_norm.reshape(batch_size, seq_len)
-
-            feature_acts_list.append(feature_acts_reshaped[:, :, feature_list])
-
-            # Get ground truth tokens (shifted by 1 for next-token prediction)
-            ground_truth_tokens = token_subblock[:, 1:]  # [batch, seq_len-1]
-            
-            # Initialize tensor to store logit differences for ground truth tokens
-            # Shape: (batch, seq_len-1, n_features)
-            n_features = len(feature_list)
-            logit_diffs = torch.zeros(
-                batch_size,
-                seq_len - 1,
-                n_features,
-                device=device
-            )
-
-            # For each feature, find where it activates and run targeted forward passes
-            for feat_idx, feat_id in enumerate(feature_list):
-                # Find all positions where this feature activates
-                # feature_acts_reshaped shape: [batch, seq_len, sparse_dim]
-                feature_activations = feature_acts_reshaped[:, :, feat_id]  # [batch, seq_len]
-                
-                # Get positions where feature is non-zero (excluding last position since we need next token)
-                activation_positions = torch.nonzero(feature_activations[:, :-1] != 0)  # [n_activations, 2] (batch_idx, seq_idx)
-                
-                if len(activation_positions) == 0:
-                    continue  # Skip if feature doesn't activate
-                
-                # For each activation position, run a forward pass
-                for batch_idx, seq_idx in activation_positions:
-                    batch_idx = batch_idx.item()
-                    seq_idx = seq_idx.item()
-                    
-                    # Create control reconstruction (with all features)
-                    control_reconstruction = reconstructed_reshaped[batch_idx, seq_idx]
-                    control_reconstruction_unnorm = (
-                        control_reconstruction * acts_norm_reshaped[batch_idx, seq_idx] + 
-                        acts_mean_reshaped[batch_idx, seq_idx]
-                    )
-                    
-                    # Create ablated reconstruction (with this feature zeroed)
-                    feature_acts_at_position = feature_acts_reshaped[batch_idx, seq_idx].clone()
-                    feature_acts_at_position[feat_id] = 0
-                    ablated_reconstruction = sae._decode(feature_acts_at_position.unsqueeze(0)).squeeze(0)
-                    ablated_reconstruction_unnorm = (
-                        ablated_reconstruction * acts_norm_reshaped[batch_idx, seq_idx] + 
-                        acts_mean_reshaped[batch_idx, seq_idx]
-                    )
-                    
-                    # Single hook function that takes the reconstruction as parameter
-                    def make_hook_fn(target_batch_idx, target_seq_idx, reconstruction):
-                        def hook_fn(acts, hook):
-                            acts[target_batch_idx, target_seq_idx] = reconstruction
-                            return acts
-                        return hook_fn
-                    
-                    # Get control logits
-                    control_hook = make_hook_fn(batch_idx, seq_idx, control_reconstruction_unnorm)
-                    logits_control = model.run_with_hooks(
-                        token_subblock,
-                        fwd_hooks=[(data_cfg.act_name, control_hook)]
-                    )
-                    
-                    # Get ablated logits
-                    ablated_hook = make_hook_fn(batch_idx, seq_idx, ablated_reconstruction_unnorm)
-                    logits_ablated = model.run_with_hooks(
-                        token_subblock,
-                        fwd_hooks=[(data_cfg.act_name, ablated_hook)]
-                    )
-                    
-                    # Get the ground truth token for the next position
-                    gt_token = ground_truth_tokens[batch_idx, seq_idx]
-                    
-                    # Extract logits for the ground truth token at the next position
-                    control_logit_gt = logits_control[batch_idx, seq_idx, gt_token]
-                    ablated_logit_gt = logits_ablated[batch_idx, seq_idx, gt_token]
-                    
-                    # Store the difference
-                    logit_diffs[batch_idx, seq_idx, feat_idx] = control_logit_gt - ablated_logit_gt
-
-            logit_diffs_list.append(logit_diffs)
-
-print(f"\nProcessed {len(tokens)} sequences in {len(logit_diffs_list)} batches")
+print(f"\nCollected activations for {all_feature_acts_0_0.shape[0]} sequences")
 
 # %%
 # Interactive visualization with navigation
 from IPython.display import HTML, display
 import json
 import time
+import html
+import unicodedata
 
-def create_interactive_feature_visualization(feature_acts_list, logit_diffs_list, tokens, model, max_sequences=10):
+def safe_token_decode(token_str):
+    # First, properly escape for HTML
+    token_str = html.escape(token_str)
+    
+    # Handle non-printable characters
+    safe_chars = []
+    for char in token_str:
+        if unicodedata.category(char) in ['Cc', 'Cf', 'Cs', 'Co', 'Cn']:
+            # Control/format/surrogate/private/unassigned characters
+            safe_chars.append(f'<span style="color: #888; font-size: 0.8em;">\\u{ord(char):04x}</span>')
+        else:
+            safe_chars.append(char)
+    
+    return ''.join(safe_chars)
+
+def create_interactive_feature_visualization(
+    all_feature_acts,
+    all_logit_diffs,
+    tokens,
+    model,
+    max_sequences=10,
+    title: str | None = None,
+    start_feature: int = 0,
+):
     """
     Create an interactive HTML visualization with navigation between features.
+    Expects *concatenated* tensors for feature activations and logit diffs.
+
+    Parameters
+    ----------
+    start_feature : int, optional
+        Which feature index to display first (default 0).
     """
     # Generate unique ID for this visualization instance
-    viz_id = f"viz_{int(time.time() * 1000)}_{id(feature_acts_list)}"
-    
-    # Concatenate all results
-    all_feature_acts = torch.cat(feature_acts_list, dim=0)  # [total_seqs, seq_len, n_features]
-    all_logit_diffs = torch.cat(logit_diffs_list, dim=0)   # [total_seqs, seq_len-1, n_features]
+    viz_id = f"viz_{int(time.time() * 1000)}_{id(all_feature_acts)}"
+
     n_features = all_feature_acts.shape[-1]
+    
+    # Ensure the starting feature is within valid range
+    start_feature = int(max(0, min(start_feature, n_features - 1)))
+    
+    # Optional title element
+    title_html = f"<h2 class='viz-title'>{title}</h2>" if title else ""
     
     # Start building HTML with embedded JavaScript
     html = f"""
     <div id="feature-viz-container-{viz_id}">
+        <meta charset="UTF-8">
         <style>
             #feature-viz-container-{viz_id} {{
                 font-family: Arial, sans-serif;
@@ -274,18 +348,23 @@ def create_interactive_feature_visualization(feature_acts_list, logit_diffs_list
             #feature-viz-container-{viz_id} .sequence-row {{ 
                 margin: 10px 0; 
                 font-family: monospace; 
-                font-size: 14px;
-                line-height: 1.8;
+                font-size: 12px;
+                line-height: 1.3;
                 white-space: pre-wrap;
                 word-wrap: break-word;
                 color: black;
             }}
             #feature-viz-container-{viz_id} .token {{ 
-                padding: 0px; 
-                margin: 0px;
+                /* give the element 2 px bottom padding so the border
+                   (added inline as an underline) is pushed downward   */
+                padding: 3px 0px;
+                margin: 0;
                 display: inline-block;
                 position: relative;
                 color: black;
+                /* keep the background-colour inside the content box only,
+                   so it doesn't fill the new padding area               */
+                background-clip: content-box;
             }}
             #feature-viz-container-{viz_id} #content-{viz_id} {{
                 border: 1px solid #ddd;
@@ -297,8 +376,14 @@ def create_interactive_feature_visualization(feature_acts_list, logit_diffs_list
             #feature-viz-container-{viz_id} h2 {{
                 color: #333;
             }}
+            #feature-viz-container-{viz_id} .viz-title {{
+                text-align: center;
+                margin: 10px 0 5px 0;
+                color: #222;
+            }}
         </style>
         
+        {title_html}
         <div class="navigation">
             <button class="nav-button" onclick="window['previousFeature_{viz_id}']()">← Previous</button>
             <span class="feature-info">Feature <span id="current-feature-{viz_id}">0</span> of <span id="total-features-{viz_id}">{n_features - 1}</span></span>
@@ -309,7 +394,7 @@ def create_interactive_feature_visualization(feature_acts_list, logit_diffs_list
         
         <script>
             (function() {{
-                let currentFeature = 0;
+                let currentFeature = {start_feature};
                 const totalFeatures = {n_features};
                 
                 // Prepare data for all features
@@ -364,23 +449,7 @@ def create_interactive_feature_visualization(feature_acts_list, logit_diffs_list
                 
                 for token_idx in range(len(seq_tokens)):
                     token_id = seq_tokens[token_idx].item()
-                    token_str = model.tokenizer.decode([token_id])
-                    
-                    # Escape HTML characters first
-                    token_str = token_str.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", "&#39;")
-                    
-                    # Handle special characters with visual representations
-                    # Newlines
-                    token_str = token_str.replace('\n', '<span style="color: #888; font-size: 0.8em;">⏎</span>')
-                    # Tabs
-                    token_str = token_str.replace('\t', '<span style="color: #888; font-size: 0.8em;">⇥</span>')
-                    # Carriage returns
-                    token_str = token_str.replace('\r', '<span style="color: #888; font-size: 0.8em;">↵</span>')
-                    
-                    # Convert regular spaces to non-breaking spaces to preserve tokenizer spacing
-                    # But first mark any special space sequences
-                    token_str = token_str.replace('  ', '<span style="color: #888;">··</span>')  # Double spaces
-                    token_str = token_str.replace(' ', '&nbsp;')
+                    token_str = safe_token_decode(model.tokenizer.decode([token_id]))
                     
                     # Get feature activation for this token
                     feat_act = normalized_feat_acts[seq_idx, token_idx].item()
@@ -448,13 +517,16 @@ def create_interactive_feature_visualization(feature_acts_list, logit_diffs_list
     
     return html
 
+
 # Create and display the interactive visualization
 html_output = create_interactive_feature_visualization(
-    feature_acts_list, 
-    logit_diffs_list, 
+    all_feature_acts_0_0, 
+    all_logit_diffs_0_0, 
     tokens, 
     model,
-    max_sequences=10
+    max_sequences=10,
+    title="Shallow SAE",
+    start_feature=23,
 )
 display(HTML(html_output))
 
