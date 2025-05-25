@@ -263,21 +263,6 @@ import time
 import html
 import unicodedata
 
-def safe_token_decode(token_str):
-    # First, properly escape for HTML
-    token_str = html.escape(token_str)
-    
-    # Handle non-printable characters
-    safe_chars = []
-    for char in token_str:
-        if unicodedata.category(char) in ['Cc', 'Cf', 'Cs', 'Co', 'Cn']:
-            # Control/format/surrogate/private/unassigned characters
-            safe_chars.append(f'<span style="color: #888; font-size: 0.8em;">\\u{ord(char):04x}</span>')
-        else:
-            safe_chars.append(char)
-    
-    return ''.join(safe_chars)
-
 def create_interactive_feature_visualization(
     all_feature_acts,
     all_logit_diffs,
@@ -308,7 +293,7 @@ def create_interactive_feature_visualization(
     title_html = f"<h2 class='viz-title'>{title}</h2>" if title else ""
     
     # Start building HTML with embedded JavaScript
-    html = f"""
+    html_content = f"""
     <div id="feature-viz-container-{viz_id}">
         <meta charset="UTF-8">
         <style>
@@ -354,16 +339,12 @@ def create_interactive_feature_visualization(
                 word-wrap: break-word;
                 color: black;
             }}
-            #feature-viz-container-{viz_id} .token {{ 
-                /* give the element 2 px bottom padding so the border
-                   (added inline as an underline) is pushed downward   */
+            #feature-viz-container-{viz_id} .token-span {{ 
                 padding: 3px 0px;
                 margin: 0;
-                display: inline-block;
+                display: inline;
                 position: relative;
                 color: black;
-                /* keep the background-colour inside the content box only,
-                   so it doesn't fill the new padding area               */
                 background-clip: content-box;
             }}
             #feature-viz-container-{viz_id} #content-{viz_id} {{
@@ -401,6 +382,39 @@ def create_interactive_feature_visualization(
                 const featureData = {{}};
     """
     
+    def get_token_char_spans(token_ids, tokenizer):
+        """
+        Get character spans for each token in the decoded text.
+        Returns list of (start_char, end_char) tuples.
+        """
+        char_spans = []
+        for i in range(len(token_ids)):
+            prefix_text = tokenizer.decode(token_ids[:i]) if i > 0 else ""
+            current_text = tokenizer.decode(token_ids[:i+1])
+            start_char = len(prefix_text)
+            end_char = len(current_text)
+            char_spans.append((start_char, end_char))
+        return char_spans
+    
+    def escape_html_preserve_structure(text):
+        """
+        Escape HTML characters while preserving whitespace structure.
+        """
+        # Basic HTML escaping
+        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        text = text.replace('"', '&quot;').replace("'", "&#39;")
+        
+        # Handle special whitespace characters with visual representations
+        text = text.replace('\n', '<span style="color: #888; font-size: 0.8em;">⏎</span>')
+        text = text.replace('\t', '<span style="color: #888; font-size: 0.8em;">⇥</span>')
+        text = text.replace('\r', '<span style="color: #888; font-size: 0.8em;">↵</span>')
+        
+        # Convert spaces to non-breaking spaces to preserve tokenizer spacing
+        text = text.replace('  ', '<span style="color: #888;">··</span>')  # Double spaces
+        text = text.replace(' ', '&nbsp;')
+        
+        return text
+    
     # Generate visualization data for each feature
     for feature_idx in range(n_features):
         feature_acts_for_feat = all_feature_acts[:, :, feature_idx]
@@ -409,6 +423,11 @@ def create_interactive_feature_visualization(
         # Normalize by this feature's maximum (per-feature normalization)
         max_feat_act_for_feature = feature_acts_for_feat.abs().max().item()
         max_logit_diff_for_feature = logit_diffs_for_feat.abs().max().item()
+        
+        if max_feat_act_for_feature == 0:
+            max_feat_act_for_feature = 1.0  # Avoid division by zero
+        if max_logit_diff_for_feature == 0:
+            max_logit_diff_for_feature = 1.0
         
         normalized_feat_acts = feature_acts_for_feat / max_feat_act_for_feature
         normalized_logit_diffs = logit_diffs_for_feat / max_logit_diff_for_feature
@@ -422,15 +441,15 @@ def create_interactive_feature_visualization(
             <div style="display: flex; gap: 30px; font-size: 12px; color: #666;">
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <span>Activation:</span>
-                    <span class="token" style="background-color: rgba(0, 0, 255, 0.0); padding: 2px 6px;">0</span>
+                    <span class="token-span" style="background-color: rgba(0, 0, 255, 0.0); padding: 2px 6px;">0</span>
                     <span>→</span>
-                    <span class="token" style="background-color: rgba(0, 0, 255, 1.0); padding: 2px 6px;">{max_feat_act_for_feature:.1e}</span>
+                    <span class="token-span" style="background-color: rgba(0, 0, 255, 1.0); padding: 2px 6px;">{max_feat_act_for_feature:.1e}</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <span>Logit Effect:</span>
-                    <span class="token" style="border-bottom: 3px solid rgba(255, 165, 0, 0.0); padding: 2px 6px;">0</span>
+                    <span class="token-span" style="border-bottom: 3px solid rgba(255, 165, 0, 0.0); padding: 2px 6px;">0</span>
                     <span>→</span>
-                    <span class="token" style="border-bottom: 3px solid rgba(0, 0, 255, 1.0); padding: 2px 6px;">{max_logit_diff_for_feature:.1e}</span>
+                    <span class="token-span" style="border-bottom: 3px solid rgba(0, 0, 255, 1.0); padding: 2px 6px;">{max_logit_diff_for_feature:.1e}</span>
                 </div>
             </div>
         </div>
@@ -445,11 +464,30 @@ def create_interactive_feature_visualization(
                 seq_idx = seq_idx.item()
                 seq_tokens = tokens[seq_idx]
                 
+                # Decode the entire sequence at once
+                full_text = model.tokenizer.decode(seq_tokens)
+                
+                # Get character spans for each token
+                char_spans = get_token_char_spans(seq_tokens, model.tokenizer)
+                
+                # Escape the full text for HTML
+                escaped_text = escape_html_preserve_structure(full_text)
+                
                 feature_html += '<div class="sequence-row">'
                 
+                # Build HTML with proper token highlighting
+                current_pos = 0
+                
                 for token_idx in range(len(seq_tokens)):
-                    token_id = seq_tokens[token_idx].item()
-                    token_str = safe_token_decode(model.tokenizer.decode([token_id]))
+                    start_char, end_char = char_spans[token_idx]
+                    
+                    # Add any text between previous token and current token (shouldn't happen but safety)
+                    if start_char > current_pos:
+                        between_text = escaped_text[current_pos:start_char]
+                        feature_html += between_text
+                    
+                    # Get the text for this token
+                    token_text = escaped_text[start_char:end_char]
                     
                     # Get feature activation for this token
                     feat_act = normalized_feat_acts[seq_idx, token_idx].item()
@@ -471,17 +509,24 @@ def create_interactive_feature_visualization(
                     # Build token HTML
                     background_style = f"background-color: rgba(0, 0, 255, {opacity});" if opacity > 0 else ""
                     
-                    feature_html += f'<span class="token" style="{background_style} {underline_style}">{token_str}</span>'
+                    feature_html += f'<span class="token-span" style="{background_style} {underline_style}">{token_text}</span>'
+                    
+                    current_pos = end_char
+                
+                # Add any remaining text (shouldn't happen but safety)
+                if current_pos < len(escaped_text):
+                    feature_html += escaped_text[current_pos:]
                 
                 feature_html += '</div>'
             
             feature_html += f"<p style='margin-top: 20px; font-size: 12px; color: #666;'>Showing {len(sequences_to_show)} of {len(sequences_with_activation)} sequences where feature {feature_idx} activates.</p>"
         
-        # Add to JavaScript object
-        html += f"\n                featureData[{feature_idx}] = `{feature_html}`;"
+        # Add to JavaScript object (escape for JavaScript string)
+        feature_html_escaped = feature_html.replace('`', '\\`').replace('\\', '\\\\').replace('${', '\\${')
+        html_content += f"\n                featureData[{feature_idx}] = `{feature_html_escaped}`;"
     
     # Complete the HTML with navigation functions
-    html += f"""
+    html_content += f"""
                 
                 function updateDisplay() {{
                     document.getElementById('content-{viz_id}').innerHTML = featureData[currentFeature];
@@ -515,8 +560,7 @@ def create_interactive_feature_visualization(
     </div>
     """
     
-    return html
-
+    return html_content
 
 # Create and display the interactive visualization
 html_output = create_interactive_feature_visualization(
