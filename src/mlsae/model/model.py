@@ -171,20 +171,33 @@ class DeepSAE(nn.Module):
             },
         ]
 
-    def _forward(self, x):
-        # Encode
+    def _encode(self, x):
+        """Encode input to sparse feature activations."""
         resid = x
         if self.encoder_dims:
             for block in self.dense_encoder_blocks:
                 resid = block(resid)
 
-        resid = feature_acts = self.sparse_encoder_block(resid)
+        feature_acts = self.sparse_encoder_block(resid)
         assert ((feature_acts == 0).float().sum(dim=-1) >= (self.sparse_dim - self.topk)).all()
+        
+        return feature_acts
 
+    def _decode(self, feature_acts):
+        """Decode sparse feature activations to reconstructed output."""
+        resid = feature_acts
         for block in self.decoder_blocks:
             resid = block(resid)
-
+        
         reconstructed = resid
+        return reconstructed
+
+    def _forward(self, x):
+        # Encode
+        feature_acts = self._encode(x)
+        
+        # Decode
+        reconstructed = self._decode(feature_acts)
 
         # MSE reconstruction loss
         mse_loss = (reconstructed.float() - x.float()).pow(2).mean()
